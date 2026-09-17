@@ -1,0 +1,139 @@
+/* Personalized City Tour – admin */
+
+.pct-topbar {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	margin: 10px 20px 0 2px;
+	padding: 8px 12px;
+	background: #fff;
+	border: 1px solid #c3c4c7;
+	border-radius: 4px;
+}
+.pct-topbar-title { font-weight: 600; }
+.pct-topbar-city { margin-left: auto; color: #50575e; }
+
+.pct-hamburger {
+	width: 36px;
+	height: 32px;
+	padding: 6px;
+	border: 1px solid #c3c4c7;
+	border-radius: 3px;
+	background: #f6f7f7;
+	cursor: pointer;
+	display: inline-flex;
+	flex-direction: column;
+	justify-content: space-between;
+}
+.pct-hamburger span { display: block; height: 2px; background: #1d2327; border-radius: 1px; }
+.pct-hamburger:focus { outline: 2px solid #2271b1; outline-offset: 1px; }
+
+.pct-drawer-backdrop {
+	position: fixed;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.35);
+	z-index: 99998;
+}
+.pct-drawer {
+	position: fixed;
+	top: 0;
+	left: 0;
+	bottom: 0;
+	width: 300px;
+	max-width: 90vw;
+	background: #fff;
+	z-index: 99999;
+	box-shadow: 2px 0 12px rgba(0, 0, 0, 0.2);
+	display: flex;
+	flex-direction: column;
+	overflow-y: auto;
+}
+.pct-drawer[hidden], .pct-drawer-backdrop[hidden] { display: none; }
+.pct-drawer-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 14px 16px;
+	border-bottom: 1px solid #dcdcde;
+}
+.pct-drawer-close { border: 0; background: none; font-size: 22px; line-height: 1; cursor: pointer; color: #50575e; }
+.pct-drawer-city { padding: 14px 16px; border-bottom: 1px solid #dcdcde; }
+.pct-drawer-city label { display: block; font-weight: 600; margin-bottom: 6px; }
+.pct-drawer-city select { width: 100%; }
+.pct-drawer-nav { display: flex; flex-direction: column; padding: 8px 0; }
+.pct-drawer-nav a { padding: 9px 16px; text-decoration: none; color: #1d2327; }
+.pct-drawer-nav a:hover, .pct-drawer-nav a:focus { background: #f0f0f1; }
+.pct-drawer-foot { margin-top: auto; padding: 12px 16px; border-top: 1px solid #dcdcde; color: #50575e; font-size: 12px; }
+
+/* dashboard */
+.pct-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin: 16px 0; }
+.pct-card {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 16px;
+	background: #fff;
+	border: 1px solid #c3c4c7;
+	border-radius: 4px;
+	text-decoration: none;
+	color: #1d2327;
+}
+.pct-card:hover { border-color: #2271b1; }
+.pct-card.is-attention { border-left: 4px solid #dba617; }
+.pct-card-num { font-size: 28px; font-weight: 600; line-height: 1.1; }
+.pct-panel { background: #fff; border: 1px solid #c3c4c7; border-radius: 4px; padding: 16px 20px; margin: 16px 0; max-width: 960px; }
+.pct-panel h2, .pct-panel h4 { margin-top: 0; }
+.pct-muted { color: #646970; }
+.pct-warn { color: #b32d2e; }
+.pct-inline { margin-left: 10px; }
+.pct-inline-form { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0; }
+.pct-actions form { margin-right: 4px; }
+.pct-status { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; background: #f0f0f1; }
+.pct-status-approved { background: #edfaef; color: #00701a; }
+.pct-status-pending { background: #fcf9e8; color: #8a6d00; }
+.pct-status-revoked { background: #fcf0f1; color: #b32d2e; }
+.pct-guides-table td { vertical-align: top; }
+
+/* meta boxes */
+.pct-form-table th { width: 180px; }
+.pct-checkboxes label { display: inline-block; margin: 0 14px 6px 0; }
+.pct-map-canvas { height: 320px; max-width: 720px; border: 1px solid #c3c4c7; border-radius: 3px; margin-top: 8px; background: #f6f7f7; }
+.pct-map-search { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.pct-geocode-results { flex-basis: 100%; }
+.pct-geocode-results button { display: block; width: 100%; text-align: left; margin: 4px 0; }
+.pct-repeater td { vertical-align: middle; }
+.pct-tour-admin h3 { margin: 1.5em 0 0.5em; }
+.pct-form-dump th { width: 240px; }
+
+/* form builder */
+.pct-fb-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; position: sticky; top: 32px; background: #f0f0f1; padding: 8px 0; z-index: 5; }
+#pct-fb-status { color: #50575e; }
+.pct-fb { max-width: 1000px; }
+.pct-fb-section { background: #fff; border: 1px solid #c3c4c7; border-radius: 4px; margin-bottom: 14px; }
+.pct-fb-section-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid #dcdcde; background: #f6f7f7; cursor: pointer; }
+.pct-fb-section-head .pct-fb-title { font-weight: 600; flex: 1; }
+.pct-fb-section-body { padding: 14px; }
+.pct-fb-section.is-collapsed .pct-fb-section-body { display: none; }
+.pct-fb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 14px; margin-bottom: 10px; }
+.pct-fb-grid label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: #50575e; }
+.pct-fb-grid label > input, .pct-fb-grid label > select, .pct-fb-grid label > textarea { width: 100%; }
+.pct-fb-grid .pct-fb-check { flex-direction: row; align-items: center; font-size: 13px; color: #1d2327; }
+.pct-fb-grid .pct-fb-wide { grid-column: 1 / -1; }
+.pct-fb-field { border: 1px solid #dcdcde; border-radius: 3px; margin-bottom: 8px; background: #fff; }
+.pct-fb-field-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; }
+.pct-fb-field-head .pct-fb-title { flex: 1; }
+.pct-fb-field-head code { color: #646970; }
+.pct-fb-field-body { padding: 12px; border-top: 1px solid #f0f0f1; }
+.pct-fb-field.is-collapsed .pct-fb-field-body { display: none; }
+.pct-fb-cond { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.pct-fb-cond select, .pct-fb-cond input { max-width: 200px; }
+.pct-fb-btns { display: flex; gap: 4px; }
+.pct-fb-btns .button { padding: 0 6px; min-height: 26px; line-height: 24px; }
+.pct-fb-json { margin-top: 20px; max-width: 1000px; }
+.pct-fb-json summary { cursor: pointer; font-weight: 600; }
+.pct-fb-empty { color: #646970; font-style: italic; padding: 6px 0; }
+
+@media (max-width: 782px) {
+	.pct-topbar-city { display: none; }
+	.pct-form-table th { width: auto; }
+}
