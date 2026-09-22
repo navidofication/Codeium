@@ -620,7 +620,7 @@ class PCT_Form_Builder {
 				return in_array( $value, array( 'yes', '1', 1, true, 'true', 'on' ), true ) ? 'yes' : ( null === $value || '' === $value ? '' : 'no' );
 			case 'date':
 				$value = is_array( $value ) ? '' : sanitize_text_field( (string) $value );
-				return preg_match( '/^\d{4}-\d{2}-\d{2}$/', $value ) ? $value : '';
+				return PCT_I18n::parse_date( $value );
 			case 'email':
 				return is_array( $value ) ? '' : sanitize_email( (string) $value );
 			case 'textarea':

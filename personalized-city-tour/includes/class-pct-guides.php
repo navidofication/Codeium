@@ -78,12 +78,15 @@ class PCT_Guides {
 
 	public static function render() {
 		$guides   = PCT_Roles::guides();
+		$profiles = PCT_Guide_Profiles::all();
+		$outbox   = PCT_SMS::outbox();
 		$cities   = PCT_Post_Types::cities();
 		$messages = array(
 			'approve' => __( 'Guide approved.', 'personalized-city-tour' ),
 			'revoke'  => __( 'Guide access revoked.', 'personalized-city-tour' ),
 			'remove'  => __( 'Guide removed.', 'personalized-city-tour' ),
 			'added'   => __( 'User added as local guide.', 'personalized-city-tour' ),
+			'sms_done' => __( 'Message marked as sent.', 'personalized-city-tour' ),
 			'nouser'  => __( 'No user found with that email or username.', 'personalized-city-tour' ),
 			'isadmin' => __( 'Administrators already have full access.', 'personalized-city-tour' ),
 			'error'   => __( 'Invalid request.', 'personalized-city-tour' ),

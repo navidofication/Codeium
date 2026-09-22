@@ -143,8 +143,8 @@ class PCT_Meta_Boxes {
 			return '' === $v ? $d : $v;
 		};
 		echo '<table class="form-table pct-form-table">';
-		self::field( '_pct_start', __( 'Starts', 'personalized-city-tour' ), self::text( '_pct_start', str_replace( ' ', 'T', $m( '_pct_start' ) ), 'datetime-local' ) );
-		self::field( '_pct_end', __( 'Ends', 'personalized-city-tour' ), self::text( '_pct_end', str_replace( ' ', 'T', $m( '_pct_end' ) ), 'datetime-local' ) );
+		self::field( '_pct_start', __( 'Starts', 'personalized-city-tour' ), self::text( '_pct_start', $m( '_pct_start' ), 'text', 'data-pct-date="datetime" dir="ltr"' ) );
+		self::field( '_pct_end', __( 'Ends', 'personalized-city-tour' ), self::text( '_pct_end', $m( '_pct_end' ), 'text', 'data-pct-date="datetime" dir="ltr"' ) );
 		self::field( '_pct_organizer_name', __( 'Organizer', 'personalized-city-tour' ), self::text( '_pct_organizer_name', $m( '_pct_organizer_name' ) ) );
 		self::field( '_pct_organizer_url', __( 'Organizer link', 'personalized-city-tour' ), self::text( '_pct_organizer_url', $m( '_pct_organizer_url' ), 'url', 'class="large-text"' ) );
 		self::field( '_pct_event_url', __( 'Public event page', 'personalized-city-tour' ), self::text( '_pct_event_url', $m( '_pct_event_url' ), 'url', 'class="large-text"' ) );

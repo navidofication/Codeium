@@ -20,6 +20,7 @@ class PCT_Admin {
 		add_action( 'pre_get_posts', array( __CLASS__, 'filter_lists' ) );
 		add_action( 'restrict_manage_posts', array( __CLASS__, 'city_filter_dropdown' ) );
 		add_action( 'admin_post_pct_set_active_city', array( __CLASS__, 'handle_set_active_city' ) );
+		add_action( 'admin_post_pct_purge_log', array( __CLASS__, 'handle_purge_log' ) );
 
 		foreach ( array( PCT_Post_Types::PLACE, PCT_Post_Types::EVENT ) as $type ) {
 			add_filter( "manage_{$type}_posts_columns", array( __CLASS__, 'columns' ) );
@@ -53,6 +54,12 @@ class PCT_Admin {
 		add_submenu_page( self::MENU, __( 'Local Guides', 'personalized-city-tour' ), __( 'Local Guides', 'personalized-city-tour' ), 'pct_manage', 'pct-guides', array( 'PCT_Guides', 'render' ) );
 		add_submenu_page( self::MENU, __( 'Form Builder', 'personalized-city-tour' ), __( 'Form Builder', 'personalized-city-tour' ), 'pct_manage', 'pct-form-builder', array( __CLASS__, 'render_form_builder' ) );
 		add_submenu_page( self::MENU, __( 'Generated Tours', 'personalized-city-tour' ), __( 'Generated Tours', 'personalized-city-tour' ), 'edit_pages', 'edit.php?post_type=' . PCT_Post_Types::TOUR );
+		add_submenu_page( self::MENU, __( 'Rule Based Planner', 'personalized-city-tour' ), __( 'Planner', 'personalized-city-tour' ), 'pct_manage', 'pct-planner', array( __CLASS__, 'render_planner' ) );
+		if ( PCT_Analytics::can_access() ) {
+			add_submenu_page( self::MENU, __( 'Center for Statistics, Information & Analysis', 'personalized-city-tour' ), __( 'Analytics', 'personalized-city-tour' ), 'read', 'pct-analytics', array( __CLASS__, 'render_analytics' ) );
+		}
+		add_submenu_page( self::MENU, __( 'My Trip, My Vibe', 'personalized-city-tour' ), __( 'My Trip, My Vibe', 'personalized-city-tour' ), 'pct_manage', 'pct-vibe', array( __CLASS__, 'render_vibe' ) );
+		add_submenu_page( self::MENU, __( 'AI Audit Log', 'personalized-city-tour' ), __( 'AI Audit Log', 'personalized-city-tour' ), 'manage_options', 'pct-ai-log', array( __CLASS__, 'render_ai_log' ) );
 		add_submenu_page( self::MENU, __( 'Settings', 'personalized-city-tour' ), __( 'Settings', 'personalized-city-tour' ), 'pct_manage', 'pct-settings', array( __CLASS__, 'render_settings' ) );
 	}
 
@@ -112,6 +119,7 @@ class PCT_Admin {
 		$screen = get_current_screen();
 		if ( $screen && 'post' === $screen->base && in_array( $screen->post_type, array( PCT_Post_Types::CITY, PCT_Post_Types::PLACE, PCT_Post_Types::EVENT ), true ) ) {
 			PCT_Frontend::enqueue_leaflet();
+			PCT_Frontend::enqueue_datepicker();
 			wp_enqueue_script( 'pct-admin-map', PCT_URL . 'admin/js/map-picker.js', array( 'pct-leaflet' ), PCT_VERSION, true );
 			wp_localize_script( 'pct-admin-map', 'pctMap', PCT_Maps::client_config() );
 		}
@@ -182,8 +190,14 @@ class PCT_Admin {
 			array( admin_url( 'admin.php?page=pct-guides' ), __( 'Local Guides', 'personalized-city-tour' ), 'pct_manage' ),
 			array( admin_url( 'admin.php?page=pct-form-builder' ), __( 'Form Builder', 'personalized-city-tour' ), 'pct_manage' ),
 			array( admin_url( 'edit.php?post_type=' . PCT_Post_Types::TOUR ), __( 'Generated Tours', 'personalized-city-tour' ), 'edit_pages' ),
+			array( admin_url( 'admin.php?page=pct-planner' ), __( 'Rule Based Planner', 'personalized-city-tour' ), 'pct_manage' ),
+			array( admin_url( 'admin.php?page=pct-analytics' ), __( 'Analytics center', 'personalized-city-tour' ), PCT_Analytics::can_access() ? 'read' : 'do_not_allow' ),
+			array( admin_url( 'admin.php?page=pct-vibe' ), __( 'My Trip, My Vibe', 'personalized-city-tour' ), 'pct_manage' ),
+			array( admin_url( 'admin.php?page=pct-ai-log' ), __( 'AI Audit Log', 'personalized-city-tour' ), 'manage_options' ),
 			array( admin_url( 'admin.php?page=pct-settings' ), __( 'Settings', 'personalized-city-tour' ), 'pct_manage' ),
 		);
+		$langs        = PCT_I18n::enabled_languages();
+		$current_lang = PCT_I18n::current();
 		?>
 		<div class="pct-topbar">
 			<button type="button" class="pct-hamburger" aria-expanded="false" aria-controls="pct-drawer" aria-label="<?php esc_attr_e( 'Open City Tour menu', 'personalized-city-tour' ); ?>">
@@ -197,6 +211,16 @@ class PCT_Admin {
 					<?php esc_html_e( 'Database: all cities', 'personalized-city-tour' ); ?>
 				<?php endif; ?>
 			</span>
+			<form class="pct-topbar-lang" method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+				<?php wp_nonce_field( 'pct_admin_lang' ); ?>
+				<input type="hidden" name="action" value="pct_admin_lang" />
+				<label for="pct-admin-lang" class="screen-reader-text"><?php esc_html_e( 'Admin language', 'personalized-city-tour' ); ?></label>
+				<select id="pct-admin-lang" name="lang" onchange="this.form.submit()">
+					<?php foreach ( $langs as $code => $meta ) : ?>
+						<option value="<?php echo esc_attr( $code ); ?>" <?php selected( $current_lang, $code ); ?>><?php echo esc_html( $meta['label'] ); ?></option>
+					<?php endforeach; ?>
+				</select>
+			</form>
 		</div>
 		<div class="pct-drawer-backdrop" hidden></div>
 		<aside id="pct-drawer" class="pct-drawer" hidden aria-label="<?php esc_attr_e( 'City Tour menu', 'personalized-city-tour' ); ?>">
@@ -410,10 +434,88 @@ class PCT_Admin {
 	public static function render_settings() {
 		$settings  = PCT_Settings::get();
 		$providers = PCT_AI::providers();
+		$tabs      = PCT_Settings::tabs();
+		$tab       = isset( $_GET['tab'] ) ? sanitize_key( $_GET['tab'] ) : 'general'; // phpcs:ignore WordPress.Security.NonceVerification
+		if ( ! isset( $tabs[ $tab ] ) ) {
+			$tab = 'general';
+		}
+		$msg      = isset( $_GET['pct_msg'] ) ? sanitize_key( $_GET['pct_msg'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
+		$messages = array(
+			'drive_connected'    => __( 'Google Drive connected.', 'personalized-city-tour' ),
+			'drive_disconnected' => __( 'Google Drive disconnected.', 'personalized-city-tour' ),
+			'drive_exported'     => __( 'Exports finished.', 'personalized-city-tour' ),
+			'drive_partial'      => __( 'Some exports failed — see the Drive log below.', 'personalized-city-tour' ),
+			'drive_error'        => __( 'Google Drive authorisation failed.', 'personalized-city-tour' ),
+			'bundle_saved'       => __( 'Language bundle saved.', 'personalized-city-tour' ),
+			'bundle_deleted'     => __( 'Uploaded bundle removed.', 'personalized-city-tour' ),
+			'bundle_error'       => __( 'The uploaded file could not be read (expected .json or .po).', 'personalized-city-tour' ),
+		);
 		include PCT_DIR . 'admin/views/settings.php';
 	}
 
 	public static function render_form_builder() {
 		include PCT_DIR . 'admin/views/form-builder.php';
+	}
+
+	public static function render_planner() {
+		$planner = PCT_Planner::get();
+		$fields  = PCT_Form_Builder::field_map( PCT_Form_Builder::get_schema() );
+		$msg     = isset( $_GET['pct_msg'] ) ? sanitize_key( $_GET['pct_msg'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
+		include PCT_DIR . 'admin/views/planner.php';
+	}
+
+	public static function render_analytics() {
+		if ( ! PCT_Analytics::can_access() ) {
+			wp_die( esc_html__( 'You do not have access to the analytics center.', 'personalized-city-tour' ) );
+		}
+		$jobs   = PCT_Analytics::jobs();
+		$report = isset( $_GET['report'] ) ? PCT_Analytics::get_job( absint( $_GET['report'] ) ) : null; // phpcs:ignore WordPress.Security.NonceVerification
+		if ( ! $report ) {
+			foreach ( $jobs as $job ) {
+				if ( 'done' === $job['status'] ) {
+					$report = $job;
+					break;
+				}
+			}
+		}
+		$cities  = PCT_Post_Types::cities();
+		$fields  = PCT_Form_Builder::field_map( PCT_Form_Builder::get_schema() );
+		$formats = PCT_Export::formats();
+		$msg     = isset( $_GET['pct_msg'] ) ? sanitize_key( $_GET['pct_msg'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
+		include PCT_DIR . 'admin/views/analytics.php';
+	}
+
+	public static function render_vibe() {
+		$vibe     = PCT_Vibe::settings();
+		$requests = PCT_Vibe::all();
+		$statuses = PCT_Vibe::statuses();
+		$outbox   = PCT_SMS::outbox();
+		$msg      = isset( $_GET['pct_msg'] ) ? sanitize_key( $_GET['pct_msg'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
+		include PCT_DIR . 'admin/views/vibe.php';
+	}
+
+	public static function render_ai_log() {
+		$args = array(
+			'kind'     => isset( $_GET['kind'] ) ? sanitize_key( $_GET['kind'] ) : '', // phpcs:ignore WordPress.Security.NonceVerification
+			'status'   => isset( $_GET['status'] ) ? sanitize_key( $_GET['status'] ) : '', // phpcs:ignore WordPress.Security.NonceVerification
+			'page'     => isset( $_GET['paged'] ) ? absint( $_GET['paged'] ) : 1, // phpcs:ignore WordPress.Security.NonceVerification
+			'per_page' => 40,
+		);
+		$log   = PCT_AI_Log::query( $args );
+		$entry = isset( $_GET['entry'] ) ? PCT_AI_Log::get( absint( $_GET['entry'] ) ) : null; // phpcs:ignore WordPress.Security.NonceVerification
+		$stats = PCT_AI_Log::stats( 30 );
+		$msg   = isset( $_GET['pct_msg'] ) ? sanitize_key( $_GET['pct_msg'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
+		include PCT_DIR . 'admin/views/ai-log.php';
+	}
+
+	public static function handle_purge_log() {
+		check_admin_referer( 'pct_purge_log' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Not allowed.', 'personalized-city-tour' ) );
+		}
+		PCT_AI_Log::purge( 0 );
+		PCT_AI_Log::log( array( 'kind' => 'audit', 'status' => 'info', 'title' => 'AI log purged by ' . wp_get_current_user()->user_login, 'force' => true ) );
+		wp_safe_redirect( add_query_arg( array( 'page' => 'pct-ai-log', 'pct_msg' => 'purged' ), admin_url( 'admin.php' ) ) );
+		exit;
 	}
 }

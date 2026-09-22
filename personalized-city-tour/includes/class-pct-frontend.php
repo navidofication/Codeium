@@ -23,8 +23,10 @@ class PCT_Frontend {
 	public static function register_assets() {
 		wp_register_style( 'pct-leaflet', PCT_URL . 'public/vendor/leaflet/leaflet.css', array(), '1.9.4' );
 		wp_register_script( 'pct-leaflet', PCT_URL . 'public/vendor/leaflet/leaflet.js', array(), '1.9.4', true );
+		wp_register_script( 'pct-datepicker', PCT_URL . 'public/js/pct-datepicker.js', array(), PCT_VERSION, true );
+		wp_register_style( 'pct-datepicker', PCT_URL . 'public/css/pct-datepicker.css', array(), PCT_VERSION );
 		wp_register_style( 'pct-public', PCT_URL . 'public/css/public.css', array( 'pct-leaflet' ), PCT_VERSION );
-		wp_register_script( 'pct-public', PCT_URL . 'public/js/public.js', array( 'pct-leaflet' ), PCT_VERSION, true );
+		wp_register_script( 'pct-public', PCT_URL . 'public/js/public.js', array( 'pct-leaflet', 'pct-datepicker' ), PCT_VERSION, true );
 	}
 
 	/**
@@ -36,6 +38,35 @@ class PCT_Frontend {
 		}
 		wp_enqueue_style( 'pct-leaflet' );
 		wp_enqueue_script( 'pct-leaflet' );
+	}
+
+	/**
+	 * Shared Jalali/Gregorian date picker (also used by admin event/meta screens).
+	 */
+	public static function enqueue_datepicker() {
+		if ( ! wp_script_is( 'pct-datepicker', 'registered' ) ) {
+			self::register_assets();
+		}
+		wp_enqueue_script( 'pct-datepicker' );
+		wp_enqueue_style( 'pct-datepicker' );
+		wp_localize_script( 'pct-datepicker', 'pctDatepicker', self::datepicker_config() );
+	}
+
+	public static function datepicker_config() {
+		return array(
+			'calendar' => PCT_I18n::calendar_for( PCT_I18n::current() ),
+			'rtl'      => PCT_I18n::is_rtl(),
+			'lang'     => PCT_I18n::current(),
+			'i18n'     => array(
+				'today'       => __( 'Today', 'personalized-city-tour' ),
+				'clear'       => __( 'Clear', 'personalized-city-tour' ),
+				'time'        => __( 'Time', 'personalized-city-tour' ),
+				'jalaliMonths' => array( 'فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور', 'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند' ),
+				'jalaliDays'   => array( 'ش', 'ی', 'د', 'س', 'چ', 'پ', 'ج' ),
+				'months'      => array_map( 'trim', explode( ',', __( 'January,February,March,April,May,June,July,August,September,October,November,December', 'personalized-city-tour' ) ) ),
+				'days'        => array_map( 'trim', explode( ',', __( 'Su,Mo,Tu,We,Th,Fr,Sa', 'personalized-city-tour' ) ) ),
+			),
+		);
 	}
 
 	public static function shortcode( $atts ) {
@@ -53,6 +84,7 @@ class PCT_Frontend {
 		}
 
 		self::enqueue_leaflet();
+		self::enqueue_datepicker();
 		wp_enqueue_style( 'pct-public' );
 		wp_enqueue_script( 'pct-public' );
 
@@ -78,6 +110,17 @@ class PCT_Frontend {
 				'canApply'     => (bool) PCT_Settings::get( 'guide_registration' ),
 				'maps'         => $maps,
 				'locale'       => str_replace( '_', '-', get_locale() ),
+				'lang'         => PCT_I18n::client_config(),
+				'calendar'     => PCT_I18n::calendar_for( PCT_I18n::current() ),
+				'rtl'          => PCT_I18n::is_rtl(),
+				'vibe'         => PCT_Vibe::enabled() ? array(
+					'fee'      => PCT_Vibe::settings()['fee_text'],
+					'vibes'    => PCT_Vibe::options_list( 'vibes' ),
+					'styles'   => PCT_Vibe::options_list( 'styles' ),
+					'subjects' => PCT_Vibe::options_list( 'subjects' ),
+					'maxMb'    => (int) PCT_Vibe::settings()['max_upload_mb'],
+				) : null,
+				'requireMobile' => (bool) PCT_Settings::get( 'guide_require_mobile', 1 ),
 				'tourId'       => isset( $_GET['pct_tour'] ) ? absint( $_GET['pct_tour'] ) : 0, // phpcs:ignore WordPress.Security.NonceVerification
 				'tourToken'    => isset( $_GET['pct_token'] ) ? sanitize_text_field( wp_unslash( $_GET['pct_token'] ) ) : '', // phpcs:ignore WordPress.Security.NonceVerification
 				'i18n'         => self::strings(),
@@ -87,7 +130,7 @@ class PCT_Frontend {
 		$logged_only = ! PCT_Settings::visitor_allowed();
 		ob_start();
 		?>
-		<div class="pct-app" data-view="<?php echo esc_attr( $view ); ?>">
+		<div class="pct-app<?php echo PCT_I18n::is_rtl() ? ' is-rtl' : ''; ?>" data-view="<?php echo esc_attr( $view ); ?>" dir="<?php echo PCT_I18n::is_rtl() ? 'rtl' : 'ltr'; ?>" lang="<?php echo esc_attr( PCT_I18n::current() ); ?>">
 			<?php if ( $logged_only && 'guide' !== $view ) : ?>
 				<div class="pct-notice">
 					<?php
@@ -128,7 +171,7 @@ class PCT_Frontend {
 		return '';
 	}
 
-	private static function strings() {
+	public static function strings() {
 		return array(
 			'traveler'        => __( 'I am a traveler', 'personalized-city-tour' ),
 			'travelerSub'     => __( 'Set up a personalized city tour based on your interests, pace and constraints.', 'personalized-city-tour' ),
@@ -206,6 +249,73 @@ class PCT_Frontend {
 			'find'            => __( 'Find', 'personalized-city-tour' ),
 			'mapHint'         => __( 'Click on the map to set the location, or search an address.', 'personalized-city-tour' ),
 			'dashboard'       => __( 'Open the dashboard', 'personalized-city-tour' ),
+			/* language */
+			'chooseLanguage'  => __( 'Choose your language', 'personalized-city-tour' ),
+			'language'        => __( 'Language', 'personalized-city-tour' ),
+			'continue'        => __( 'Continue', 'personalized-city-tour' ),
+			/* progress */
+			'progressSteps'   => array(
+				__( 'Checking your answers', 'personalized-city-tour' ),
+				__( 'Reading the city database', 'personalized-city-tour' ),
+				__( 'Composing your day-by-day plan', 'personalized-city-tour' ),
+				__( 'Preparing route maps', 'personalized-city-tour' ),
+			),
+			'tourLink'        => __( 'Your tour link', 'personalized-city-tour' ),
+			'cityChannels'    => __( 'City channels', 'personalized-city-tour' ),
+			'cityOnGoogle'    => __( 'City on Google Maps', 'personalized-city-tour' ),
+			'searchSite'      => __( 'Search on this site', 'personalized-city-tour' ),
+			/* navigation */
+			'plannedRoute'    => __( 'Planned tour route', 'personalized-city-tour' ),
+			'yourRoute'       => __( 'Your route', 'personalized-city-tour' ),
+			'savedPlaces'     => __( 'My places', 'personalized-city-tour' ),
+			'savedPlacesSub'  => __( 'Saved only on this device.', 'personalized-city-tour' ),
+			'saveHere'        => __( 'Save my current location', 'personalized-city-tour' ),
+			'goTo'            => __( 'Go to', 'personalized-city-tour' ),
+			'remove'          => __( 'Remove', 'personalized-city-tour' ),
+			'saved'           => __( 'Saved.', 'personalized-city-tour' ),
+			'needLocation'    => __( 'Start navigation first so we know where you are.', 'personalized-city-tour' ),
+			'placeTypes'      => array(
+				'parking'       => __( 'Parking', 'personalized-city-tour' ),
+				'bus'           => __( 'Bus stop', 'personalized-city-tour' ),
+				'metro'         => __( 'Metro station', 'personalized-city-tour' ),
+				'accommodation' => __( 'Accommodation', 'personalized-city-tour' ),
+			),
+			'backToTour'      => __( 'Back to the tour route', 'personalized-city-tour' ),
+			'decrease'        => __( 'Decrease', 'personalized-city-tour' ),
+			'increase'        => __( 'Increase', 'personalized-city-tour' ),
+			/* guide without login */
+			'guideRegister'   => __( 'Register as a local guide', 'personalized-city-tour' ),
+			'guideRegisterSub' => __( 'No account needed. Enter your mobile number so an administrator can verify you; your events are published after verification.', 'personalized-city-tour' ),
+			'guideStatus'     => __( 'Registration status', 'personalized-city-tour' ),
+			'guideApproved'   => __( 'Verified local guide', 'personalized-city-tour' ),
+			'guidePendingSub' => __( 'You can already register events. They stay hidden until an administrator verifies your mobile number.', 'personalized-city-tour' ),
+			'guideForget'     => __( 'Forget this device', 'personalized-city-tour' ),
+			'mobile'          => __( 'Mobile number', 'personalized-city-tour' ),
+			'mobileHint'      => __( 'Example: 0912 123 4567 or +98 912 123 4567', 'personalized-city-tour' ),
+			'organizerMobile' => __( 'Organizer mobile', 'personalized-city-tour' ),
+			/* vibe */
+			'vibe'            => __( 'My Trip, My Vibe', 'personalized-city-tour' ),
+			'vibeSub'         => __( 'Turn a travel photo into an AI illustration in the style you love.', 'personalized-city-tour' ),
+			'vibeOtpTitle'    => __( 'Verify your mobile number', 'personalized-city-tour' ),
+			'vibeOtpSent'     => __( 'We sent a 6-digit code to your mobile.', 'personalized-city-tour' ),
+			'sendCode'        => __( 'Send code', 'personalized-city-tour' ),
+			'code'            => __( 'Verification code', 'personalized-city-tour' ),
+			'verify'          => __( 'Verify', 'personalized-city-tour' ),
+			'vibeForm'        => __( 'Describe your vibe', 'personalized-city-tour' ),
+			'photo'           => __( 'Your photo', 'personalized-city-tour' ),
+			'photoHint'       => __( 'JPEG or PNG, up to %d MB. It is only used for this illustration.', 'personalized-city-tour' ),
+			'vibeChoice'      => __( 'Vibe', 'personalized-city-tour' ),
+			'styleChoice'     => __( 'Art style', 'personalized-city-tour' ),
+			'subjectChoice'   => __( 'Subject', 'personalized-city-tour' ),
+			'notes'           => __( 'Notes for the artist', 'personalized-city-tour' ),
+			'vibeSubmit'      => __( 'Send request', 'personalized-city-tour' ),
+			'vibeSent'        => __( 'Request received. You will be notified once it is approved and generated.', 'personalized-city-tour' ),
+			'myRequests'      => __( 'My requests', 'personalized-city-tour' ),
+			'noRequests'      => __( 'No requests yet.', 'personalized-city-tour' ),
+			'download'        => __( 'Download', 'personalized-city-tour' ),
+			'share'           => __( 'Share', 'personalized-city-tour' ),
+			'refresh'         => __( 'Refresh', 'personalized-city-tour' ),
+			'consent'         => __( 'I agree that my photo is processed by an AI image service for this request.', 'personalized-city-tour' ),
 			'labels'          => array(
 				'name'           => __( 'Your name', 'personalized-city-tour' ),
 				'email'          => __( 'Email', 'personalized-city-tour' ),

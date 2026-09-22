@@ -12,6 +12,17 @@
 	if (!root) {
 		return;
 	}
+	var LS = {
+		get: function (k) { try { return window.localStorage.getItem('pct_' + k); } catch (e) { return null; } },
+		set: function (k, v) { try { if (v === null) { window.localStorage.removeItem('pct_' + k); } else { window.localStorage.setItem('pct_' + k, v); } } catch (e) { /* private mode */ } }
+	};
+	var lang = {
+		list: (cfg.lang && cfg.lang.languages) || [],
+		current: (cfg.lang && cfg.lang.current) || 'en',
+		calendar: cfg.calendar || 'gregorian',
+		rtl: !!cfg.rtl
+	};
+	var lastRender = null;
 
 	/* ------------------------------------------------------------------ */
 	/* helpers                                                             */
@@ -75,11 +86,23 @@
 		var opts = {
 			method: method || 'GET',
 			credentials: 'same-origin',
-			headers: { 'X-WP-Nonce': cfg.nonce }
+			headers: { 'X-WP-Nonce': cfg.nonce, 'X-PCT-LANG': lang.current }
 		};
+		var guideToken = LS.get('guide_token');
+		if (guideToken) {
+			opts.headers['X-PCT-GUIDE'] = guideToken;
+		}
+		var visitorToken = LS.get('visitor_token');
+		if (visitorToken) {
+			opts.headers['X-PCT-VISITOR'] = visitorToken;
+		}
 		if (body !== undefined) {
-			opts.headers['Content-Type'] = 'application/json';
-			opts.body = JSON.stringify(body);
+			if (typeof FormData !== 'undefined' && body instanceof FormData) {
+				opts.body = body;
+			} else {
+				opts.headers['Content-Type'] = 'application/json';
+				opts.body = JSON.stringify(body);
+			}
 		}
 		return fetch(url, opts).then(function (res) {
 			return res.text().then(function (txt) {
@@ -113,10 +136,95 @@
 
 	function mount(view) {
 		clear(root);
+		root.appendChild(langBar());
 		root.appendChild(view);
 		if (root.getBoundingClientRect().top < 0) {
 			root.scrollIntoView({ behavior: 'smooth', block: 'start' });
 		}
+	}
+
+	function rerender() {
+		if (lastRender) {
+			lastRender();
+		}
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* language                                                            */
+	/* ------------------------------------------------------------------ */
+
+	function applyLanguage(code, data) {
+		lang.current = code;
+		lang.rtl = !!data.rtl;
+		lang.calendar = data.calendar || 'gregorian';
+		t = data.strings || t;
+		cfg.i18n = t;
+		if (data.form) {
+			state.schema = data.form;
+		}
+		if (data.vibe !== undefined) {
+			cfg.vibe = data.vibe;
+		}
+		if (guide.status && data.categories) {
+			guide.status.categories = data.categories;
+		}
+		if (window.PCTDate) {
+			cfg.calendar = lang.calendar;
+		}
+		root.setAttribute('dir', lang.rtl ? 'rtl' : 'ltr');
+		root.setAttribute('lang', code);
+		root.classList.toggle('is-rtl', lang.rtl);
+		LS.set('lang', code);
+		document.cookie = 'pct_lang=' + encodeURIComponent(code) + '; path=/; max-age=31536000; SameSite=Lax';
+	}
+
+	function switchLanguage(code, then) {
+		if (code === lang.current && then) {
+			then();
+			return Promise.resolve();
+		}
+		root.classList.add('is-busy');
+		return api('/i18n', 'GET', undefined, { lang: code }).then(function (data) {
+			applyLanguage(code, data);
+			root.classList.remove('is-busy');
+			if (then) {
+				then();
+			} else {
+				rerender();
+			}
+		}).catch(function () {
+			root.classList.remove('is-busy');
+			if (then) {
+				then();
+			}
+		});
+	}
+
+	function langBar() {
+		if (lang.list.length < 2) {
+			return el('span');
+		}
+		var sel = el('select', { class: 'pct-lang-select', 'aria-label': t.language, onChange: function (e) { switchLanguage(e.target.value); } }, lang.list.map(function (l) {
+			return el('option', { value: l.code, text: l.label, selected: l.code === lang.current });
+		}));
+		return el('div', { class: 'pct-lang-bar' }, [sel]);
+	}
+
+	function renderLanguage() {
+		lastRender = renderLanguage;
+		var view = el('div', { class: 'pct-langs' }, [
+			el('h2', { text: t.chooseLanguage }),
+			el('div', { class: 'pct-lang-grid' }, lang.list.map(function (l) {
+				return el('button', { type: 'button', class: 'pct-lang-card' + (l.code === lang.current ? ' is-selected' : ''), dir: l.rtl ? 'rtl' : 'ltr', lang: l.code, onClick: function () {
+					switchLanguage(l.code, function () {
+						LS.set('lang_chosen', '1');
+						bootDefault();
+					});
+				} }, [el('strong', { text: l.label })]);
+			}))
+		]);
+		clear(root);
+		root.appendChild(view);
 	}
 
 	function formatDistance(m) {
@@ -168,6 +276,7 @@
 	/* ------------------------------------------------------------------ */
 
 	function renderEntry() {
+		lastRender = renderEntry;
 		var view = el('div', { class: 'pct-entry' }, [
 			el('button', { type: 'button', class: 'pct-entry-card', onClick: startTraveler }, [
 				el('strong', { text: t.traveler }),
@@ -176,7 +285,11 @@
 			el('button', { type: 'button', class: 'pct-entry-card', onClick: startGuide }, [
 				el('strong', { text: t.guide }),
 				el('span', { class: 'pct-muted', text: t.guideSub })
-			])
+			]),
+			cfg.vibe ? el('button', { type: 'button', class: 'pct-entry-card', onClick: startVibe }, [
+				el('strong', { text: t.vibe }),
+				el('span', { class: 'pct-muted', text: t.vibeSub })
+			]) : null
 		]);
 		mount(view);
 	}
@@ -235,6 +348,7 @@
 	}
 
 	function renderCities() {
+		lastRender = renderCities;
 		var list = el('div', { class: 'pct-cities' });
 		if (!state.cities.length) {
 			list.appendChild(el('p', { class: 'pct-muted', text: t.noCities }));
@@ -332,6 +446,7 @@
 	}
 
 	function renderForm() {
+		lastRender = renderForm;
 		prefill();
 		var sections = visibleSections();
 		if (state.step >= sections.length) {
@@ -488,10 +603,20 @@
 				}));
 				break;
 			case 'number':
-				control = el('input', { type: 'number', id: inputId, min: f.min !== '' ? f.min : undefined, max: f.max !== '' ? f.max : undefined, step: f.step || undefined, value: v === undefined ? '' : v, placeholder: f.placeholder || undefined, onInput: function (e) { setValue(f.id, e.target.value); } });
+				control = renderStepper(f, inputId, v);
 				break;
 			case 'date':
-				control = el('input', { type: 'date', id: inputId, value: v || '', onChange: function (e) { setValue(f.id, e.target.value); } });
+				control = el('input', { type: 'text', id: inputId, value: v || '', onChange: function (e) { setValue(f.id, e.target.value); } });
+				if (window.PCTDate) {
+					// Attach after the node is in the DOM so the popover wrapper can be inserted.
+					setTimeout(function () {
+						if (control.parentNode) {
+							window.PCTDate.attach(control, { calendar: lang.calendar });
+						}
+					}, 0);
+				} else {
+					control.type = 'date';
+				}
 				break;
 			default:
 				control = el('input', { type: f.type === 'email' ? 'email' : (f.type === 'tel' ? 'tel' : 'text'), id: inputId, value: v || '', placeholder: f.placeholder || undefined, autocomplete: f.id === 'name' ? 'name' : (f.type === 'email' ? 'email' : (f.type === 'tel' ? 'tel' : undefined)), onInput: function (e) { state.values[f.id] = e.target.value; } });
@@ -504,6 +629,36 @@
 			wrap.appendChild(el('p', { class: 'pct-error', text: state.errors[f.id] }));
 		}
 		return wrap;
+	}
+
+	/**
+	 * Numeric field with explicit −/+ buttons. Each click changes the value by
+	 * exactly one step; typing directly into the box is always allowed.
+	 */
+	function renderStepper(f, inputId, v) {
+		var step = parseFloat(f.step) || 1;
+		var min = f.min !== '' && f.min !== undefined ? parseFloat(f.min) : null;
+		var max = f.max !== '' && f.max !== undefined ? parseFloat(f.max) : null;
+		var input = el('input', { type: 'number', id: inputId, inputmode: 'numeric', min: min !== null ? min : undefined, max: max !== null ? max : undefined, step: step, value: v === undefined ? '' : v, placeholder: f.placeholder || undefined, onInput: function (e) {
+			setValue(f.id, e.target.value);
+		} });
+		function clamp(n) {
+			if (min !== null && n < min) { n = min; }
+			if (max !== null && n > max) { n = max; }
+			return Math.round(n * 1000) / 1000;
+		}
+		function bump(dir) {
+			var cur = parseFloat(input.value);
+			if (isNaN(cur)) {
+				cur = min !== null ? min - (dir > 0 ? step : 0) : 0;
+			}
+			var next = clamp(cur + dir * step);
+			input.value = next;
+			setValue(f.id, String(next));
+		}
+		var minus = el('button', { type: 'button', class: 'pct-step', 'aria-label': t.decrease, text: '−', onClick: function (e) { e.preventDefault(); bump(-1); } });
+		var plus = el('button', { type: 'button', class: 'pct-step', 'aria-label': t.increase, text: '+', onClick: function (e) { e.preventDefault(); bump(1); } });
+		return el('div', { class: 'pct-stepper' }, [minus, input, plus]);
 	}
 
 	/* Ranked choice: pick options, then order them. */
@@ -1090,6 +1245,29 @@
 	/* ------------------------------------------------------------------ */
 
 	var guide = { status: null, events: null };
+
+	function startVibe() {
+		lastRender = startVibe;
+		var mobile = el('input', { type: 'tel', dir: 'ltr', placeholder: t.mobileHint });
+		var msg = el('div');
+		var view = el('div', {}, [
+			header(t.vibe, backToEntry),
+			el('p', { class: 'pct-muted', text: t.vibeSub }),
+			el('h3', { text: t.vibeOtpTitle }),
+			el('label', {}, [el('span', { text: t.mobile }), mobile]),
+			el('button', { type: 'button', class: 'pct-btn', text: t.sendCode, onClick: function () {
+				api('/vibe/otp', 'POST', { mobile: mobile.value }).then(function () {
+					clear(msg);
+					msg.appendChild(notice(t.vibeOtpSent));
+				}).catch(function (e) {
+					clear(msg);
+					msg.appendChild(notice(e.message || t.error, 'error'));
+				});
+			} }),
+			msg
+		]);
+		mount(view);
+	}
 
 	function startGuide() {
 		mount(el('div', { class: 'pct-loading', text: '…' }));

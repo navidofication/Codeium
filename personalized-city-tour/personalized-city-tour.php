@@ -1,10 +1,12 @@
 <?php
 /**
  * Plugin Name: Personalized City Tour
- * Plugin URI:  https://github.com/zhanxiong-cognition/test-repo
- * Description: City databases, local-guide event registration, a travel preference form builder and AI-generated personalized tours with online route maps.
- * Version:     1.0.0
- * Author:      Personalized City Tour
+ * Plugin URI:  https://rahimghazi.ir
+ * Description: City databases, local-guide event registration, a travel preference form builder, a rule based planner and AI-generated multilingual personalized tours with online route maps and navigation.
+ * Version:     2.0.0
+ * Author:      Rahimghazi.ir
+ * Author URI:  https://rahimghazi.ir
+ * Credits:     RahimGhazi & Devin/R&D HumanAI
  * License:     GPL-2.0-or-later
  * Text Domain: personalized-city-tour
  * Domain Path: /languages
@@ -16,7 +18,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'PCT_VERSION', '1.0.0' );
+define( 'PCT_VERSION', '2.0.0' );
+define( 'PCT_AUTHOR', 'Rahimghazi.ir' );
+define( 'PCT_CREDITS', 'RahimGhazi & Devin/R&D HumanAI' );
 define( 'PCT_FILE', __FILE__ );
 define( 'PCT_DIR', plugin_dir_path( __FILE__ ) );
 define( 'PCT_URL', plugin_dir_url( __FILE__ ) );

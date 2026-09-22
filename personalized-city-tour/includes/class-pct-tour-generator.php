@@ -14,18 +14,21 @@ class PCT_Tour_Generator {
 	/**
 	 * @param int   $city_id City post ID.
 	 * @param array $form    Validated form data.
+	 * @param array $opts    lang (ui language code).
 	 * @return array|WP_Error
 	 */
-	public static function generate( $city_id, array $form ) {
+	public static function generate( $city_id, array $form, array $opts = array() ) {
 		$city = PCT_Data::city( $city_id );
 		if ( ! $city ) {
 			return new WP_Error( 'pct_no_city', __( 'Unknown city.', 'personalized-city-tour' ) );
 		}
+		$lang = isset( $opts['lang'] ) ? PCT_I18n::normalize( $opts['lang'] ) : PCT_I18n::current();
 
 		$items = self::candidate_items( $city, $form );
 		if ( empty( $items ) ) {
 			return new WP_Error( 'pct_no_data', __( 'There is no city data available for this destination yet.', 'personalized-city-tour' ) );
 		}
+		$items = PCT_Planner::apply_to_items( $items, $form );
 
 		$days     = self::days_count( $form );
 		$per_day  = self::stops_per_day( $form );
@@ -34,21 +37,26 @@ class PCT_Tour_Generator {
 		$warning  = '';
 
 		if ( PCT_AI::enabled() ) {
-			$ai = self::ai_plan( $city, $form, $items, $days, $per_day );
-			if ( is_wp_error( $ai ) ) {
-				$warning = $ai->get_error_message();
+			if ( ! PCT_AI::city_db_consent() ) {
+				$warning = __( 'AI is configured but "city database → AI" consent is off; the built-in planner was used.', 'personalized-city-tour' );
 			} else {
-				$result   = $ai;
-				$provider = PCT_Settings::get( 'ai_provider' );
+				$ai = self::ai_plan( $city, $form, $items, $days, $per_day, $lang );
+				if ( is_wp_error( $ai ) ) {
+					$warning = $ai->get_error_message();
+				} else {
+					$result   = PCT_Planner::post_filter( $ai, $items, $form );
+					$provider = PCT_AI::sandbox() ? 'sandbox' : PCT_Settings::get( 'ai_provider' );
+				}
 			}
 		}
 		if ( null === $result ) {
 			$result = self::rule_based_plan( $city, $form, $items, $days, $per_day );
 		}
 
-		$result = self::finalize( $result, $city, $form, $items );
+		$result = self::finalize( $result, $city, $form, $items, $lang );
 		$result['provider']     = $provider;
 		$result['generated_at'] = current_time( 'mysql' );
+		$result['lang']         = $lang;
 		if ( $warning && current_user_can( 'pct_manage' ) ) {
 			$result['warning'] = $warning;
 		}
@@ -231,6 +239,7 @@ class PCT_Tour_Generator {
 		$plan_days = array();
 		$times     = self::slot_times( $form, $per_day );
 		$weights   = self::interest_weights( $form );
+		$pw        = PCT_Planner::get()['weights'];
 
 		for ( $d = 1; $d <= $days; $d++ ) {
 			if ( empty( $pool ) ) {
@@ -247,10 +256,10 @@ class PCT_Tour_Generator {
 				$bestv = -INF;
 				foreach ( $pool as $idx => $cand ) {
 					$dist  = PCT_Data::distance( $last['lat'], $last['lng'], $cand['lat'], $cand['lng'] );
-					$value = $cand['score'] - min( 8, $dist * 1.5 );
+					$value = $cand['score'] - min( (float) $pw['max_distance_km'], $dist * (float) $pw['distance_penalty'] );
 					// Encourage variety within a day.
 					if ( array_intersect( $cand['categories'], $last['categories'] ) ) {
-						$value -= 1.5;
+						$value -= (float) $pw['variety_penalty'];
 					}
 					if ( $value > $bestv ) {
 						$bestv = $value;
@@ -398,13 +407,87 @@ class PCT_Tour_Generator {
 	 * AI planner
 	 * ------------------------------------------------------------------ */
 
-	private static function ai_plan( array $city, array $form, array $items, $days, $per_day ) {
+	/**
+	 * City-database fields the admin may allow in the AI extract.
+	 */
+	public static function extract_fields() {
+		return array(
+			'name'          => __( 'Name', 'personalized-city-tour' ),
+			'type'          => __( 'Type (place/event)', 'personalized-city-tour' ),
+			'categories'    => __( 'Categories', 'personalized-city-tour' ),
+			'tags'          => __( 'Tags', 'personalized-city-tour' ),
+			'summary'       => __( 'Summary text', 'personalized-city-tour' ),
+			'address'       => __( 'Address', 'personalized-city-tour' ),
+			'coordinates'   => __( 'Coordinates', 'personalized-city-tour' ),
+			'link'          => __( 'Official / event links', 'personalized-city-tour' ),
+			'price_tier'    => __( 'Price tier', 'personalized-city-tour' ),
+			'accessibility' => __( 'Accessibility', 'personalized-city-tour' ),
+			'duration'      => __( 'Typical duration', 'personalized-city-tour' ),
+			'best_time'     => __( 'Best time of day', 'personalized-city-tour' ),
+			'hours'         => __( 'Opening hours', 'personalized-city-tour' ),
+			'start'         => __( 'Event start', 'personalized-city-tour' ),
+			'end'           => __( 'Event end', 'personalized-city-tour' ),
+			'venue'         => __( 'Venue', 'personalized-city-tour' ),
+			'organizer'     => __( 'Organizer name', 'personalized-city-tour' ),
+			'channels'      => __( 'City channels & My Maps (city level)', 'personalized-city-tour' ),
+			'socials'       => __( 'Social media links', 'personalized-city-tour' ),
+		);
+	}
+
+	/**
+	 * Scoped extract of one city item containing only admin-allowed fields.
+	 */
+	public static function extract_item( array $item, array $allowed ) {
+		$row = array( 'id' => $item['id'] );
+		$map = array(
+			'name'          => 'name',
+			'type'          => 'type',
+			'categories'    => 'categories',
+			'tags'          => 'tags',
+			'summary'       => 'summary',
+			'address'       => 'address',
+			'link'          => 'link',
+			'price_tier'    => 'price',
+			'accessibility' => 'access',
+			'duration'      => 'duration',
+			'best_time'     => 'best_time',
+			'hours'         => 'hours',
+			'socials'       => 'socials',
+		);
+		foreach ( $map as $field => $key ) {
+			if ( in_array( $field, $allowed, true ) && isset( $item[ $field ] ) && '' !== $item[ $field ] && array() !== $item[ $field ] ) {
+				$row[ $key ] = $item[ $field ];
+			}
+		}
+		if ( in_array( 'coordinates', $allowed, true ) && ! empty( $item['lat'] ) ) {
+			$row['lat'] = $item['lat'];
+			$row['lng'] = $item['lng'];
+		}
+		if ( 'event' === $item['type'] ) {
+			foreach ( array( 'start' => 'starts', 'end' => 'ends', 'venue' => 'venue', 'organizer' => 'organizer' ) as $field => $key ) {
+				if ( in_array( $field, $allowed, true ) && ! empty( $item[ $field ] ) ) {
+					$row[ $key ] = $item[ $field ];
+				}
+			}
+		}
+		return $row;
+	}
+
+	/**
+	 * Build the structured payload sent to the AI (also used for QA samples).
+	 */
+	public static function ai_payload( array $city, array $form, array $items, $days, $per_day, $lang ) {
 		$schema  = PCT_Form_Builder::get_schema();
 		$fields  = PCT_Form_Builder::field_map( $schema );
 		$profile = array();
+		$share_contact = (bool) PCT_Settings::get( 'ai_share_contact', 0 );
+		$share_name    = (bool) PCT_Settings::get( 'ai_share_name', 0 );
 		foreach ( $form as $key => $value ) {
-			if ( in_array( $key, array( 'name', 'email', 'phone' ), true ) ) {
-				continue; // Never send personal contact data to the provider.
+			if ( in_array( $key, array( 'email', 'phone' ), true ) && ! $share_contact ) {
+				continue; // Contact data stays local unless explicitly configured.
+			}
+			if ( 'name' === $key && ! $share_name ) {
+				continue;
 			}
 			$label           = isset( $fields[ $key ] ) ? $fields[ $key ]['label'] : $key;
 			$profile[ $key ] = array(
@@ -413,65 +496,96 @@ class PCT_Tour_Generator {
 			);
 		}
 
+		$allowed = (array) PCT_Settings::get( 'ai_allowed_fields', array() );
 		$compact = array();
 		foreach ( $items as $item ) {
-			$row = array(
-				'id'         => $item['id'],
-				'type'       => $item['type'],
-				'name'       => $item['name'],
-				'categories' => $item['categories'],
-				'tags'       => $item['tags'],
-				'summary'    => $item['summary'],
-				'price'      => $item['price_tier'],
-				'access'     => $item['accessibility'],
-				'duration'   => $item['duration'],
-				'best_time'  => $item['best_time'],
-				'hours'      => $item['hours'],
-			);
-			if ( 'event' === $item['type'] ) {
-				$row['starts']    = $item['start'];
-				$row['ends']      = $item['end'];
-				$row['organizer'] = $item['organizer'];
-			}
-			$compact[] = $row;
+			$compact[] = self::extract_item( $item, $allowed );
 		}
 
-		$system = 'You are an experienced local tour planner for ' . $city['name'] . ( $city['country'] ? ', ' . $city['country'] : '' ) . '. '
-			. 'You plan personalized city tours strictly from the provided city database items. '
-			. 'Never invent places: every stop must reference an item id from the list. '
-			. 'Respect accessibility, budget, dietary, pace and time-of-day preferences. '
-			. 'If the traveller uses a wheelchair, only use items whose access list contains "wheelchair". '
-			. 'Return ONLY valid JSON matching this schema: '
+		$city_block = array(
+			'name'        => $city['name'],
+			'country'     => $city['country'],
+			'description' => wp_trim_words( $city['description'], 80 ),
+		);
+		if ( in_array( 'channels', $allowed, true ) ) {
+			$city_block['channels'] = array_map(
+				function ( $c ) {
+					return array( 'label' => $c['label'], 'url' => $c['url'] );
+				},
+				(array) $city['channels']
+			);
+			$city_block['curated_maps'] = array_map(
+				function ( $m ) {
+					return array( 'label' => $m['label'], 'url' => $m['url'] );
+				},
+				(array) $city['mymaps']
+			);
+		}
+
+		$title = PCT_AI::request_title( (string) ( $form['name'] ?? '' ), $lang, $city['name'] );
+
+		return array(
+			'title'        => $title,
+			'consent'      => array(
+				'city_db_to_ai'   => PCT_AI::city_db_consent(),
+				'allowed_fields'  => $allowed,
+				'contact_shared'  => $share_contact,
+			),
+			'instructions' => array(
+				'days'                 => $days,
+				'stops_per_day'        => $per_day,
+				'alternatives_per_day' => 2,
+				'quick_search_hints'   => 'Short search phrases the traveller can type into the site search tool near each stop (3-5 per day).',
+				'language'             => $lang,
+				'today'                => current_time( 'Y-m-d' ),
+				'calendar'             => PCT_I18n::calendar_for( $lang ),
+			),
+			'planner_rules' => PCT_Planner::prompt_rules( $form ),
+			'city'         => $city_block,
+			'traveller'    => $profile,
+			'items'        => $compact,
+		);
+	}
+
+	public static function system_prompt( array $city, $lang ) {
+		$template = trim( (string) PCT_Settings::get( 'ai_prompt_template', '' ) );
+		if ( '' === $template ) {
+			$template = 'You are an experienced local tour planner for {city}. '
+				. 'You plan personalized city tours strictly from the provided city database items. '
+				. 'Never invent places: every stop must reference an item id from the list. '
+				. 'Respect accessibility, budget, dietary, pace and time-of-day preferences and the planner_rules. '
+				. 'If the traveller uses a wheelchair, only use items whose access list contains "wheelchair". '
+				. 'Write all texts in language "{lang}".';
+		}
+		$system = str_replace(
+			array( '{city}', '{country}', '{lang}' ),
+			array( $city['name'] . ( $city['country'] ? ', ' . $city['country'] : '' ), $city['country'], $lang ),
+			$template
+		);
+		return $system . ' Return ONLY valid JSON matching this schema: '
 			. '{"days":[{"day":1,"title":"string","summary":"string (2-4 sentences)","stops":[{"item_id":123,"time":"HH:MM","note":"string, practical tip"}],'
 			. '"alternatives":[{"item_id":123,"note":"string"}],"accessibility_notes":"string","quick_search_hints":["string"]}]}';
+	}
 
-		$user = wp_json_encode(
+	private static function ai_plan( array $city, array $form, array $items, $days, $per_day, $lang ) {
+		$payload = self::ai_payload( $city, $form, $items, $days, $per_day, $lang );
+		$system  = self::system_prompt( $city, $lang );
+		$user    = wp_json_encode( $payload, JSON_UNESCAPED_UNICODE );
+
+		$json = PCT_AI::complete_json(
+			$system,
+			$user,
 			array(
-				'instructions' => array(
-					'days'          => $days,
-					'stops_per_day' => $per_day,
-					'alternatives_per_day' => 2,
-					'quick_search_hints'   => 'Short search phrases the traveller can type into a maps/search app near each stop (3-5 per day).',
-					'language'      => get_bloginfo( 'language' ),
-					'today'         => current_time( 'Y-m-d' ),
-				),
-				'city'         => array(
-					'name'        => $city['name'],
-					'country'     => $city['country'],
-					'description' => wp_trim_words( $city['description'], 80 ),
-				),
-				'traveller'    => $profile,
-				'items'        => $compact,
-			),
-			JSON_UNESCAPED_UNICODE
+				'kind'   => 'tour',
+				'title'  => $payload['title'],
+				'schema' => PCT_Schema::tour_schema( $days, $per_day ),
+				'mock'   => function () use ( $city, $form, $items, $days, $per_day ) {
+					return self::rule_based_plan( $city, $form, $items, $days, $per_day );
+				},
+			)
 		);
-
-		$json = PCT_AI::complete_json( $system, $user );
 		if ( is_wp_error( $json ) ) {
 			return $json;
-		}
-		if ( empty( $json['days'] ) || ! is_array( $json['days'] ) ) {
-			return new WP_Error( 'pct_ai_shape', __( 'AI response did not contain any days.', 'personalized-city-tour' ) );
 		}
 		return $json;
 	}
@@ -480,7 +594,7 @@ class PCT_Tour_Generator {
 	 * Normalisation shared by both planners
 	 * ------------------------------------------------------------------ */
 
-	private static function finalize( array $result, array $city, array $form, array $items ) {
+	private static function finalize( array $result, array $city, array $form, array $items, $lang = 'en' ) {
 		$by_id = array();
 		foreach ( $items as $item ) {
 			$by_id[ (int) $item['id'] ] = $item;
@@ -545,16 +659,26 @@ class PCT_Tour_Generator {
 			);
 		}
 
+		$name = trim( (string) ( $form['name'] ?? '' ) );
+		$date = PCT_I18n::format_date( current_time( 'timestamp' ), $lang ); // phpcs:ignore WordPress.DateTime.CurrentTimeTimestamp
+		/* translators: 1: traveller name, 2: city, 3: date */
+		$title = sprintf( __( '%1$s — your personalized tour — %2$s — %3$s', 'personalized-city-tour' ), $name ? $name : __( 'Traveller', 'personalized-city-tour' ), $city['name'], $date );
+
 		return array(
-			'city' => array(
-				'id'     => $city['id'],
-				'name'   => $city['name'],
-				'lat'    => $city['lat'],
-				'lng'    => $city['lng'],
-				'zoom'   => $city['zoom'],
-				'mymaps' => $city['mymaps'],
+			'title'   => $title,
+			'summary' => sanitize_textarea_field( (string) ( $result['summary'] ?? '' ) ),
+			'city'    => array(
+				'id'         => $city['id'],
+				'name'       => $city['name'],
+				'lat'        => $city['lat'],
+				'lng'        => $city['lng'],
+				'zoom'       => $city['zoom'],
+				'channels'   => $city['channels'],
+				'gmaps_url'  => $city['gmaps_url'],
+				'mymaps'     => PCT_Settings::get( 'show_mymaps_public', 0 ) ? $city['mymaps'] : array(),
+				'search_url' => PCT_Maps::search_url(),
 			),
-			'days' => $days,
+			'days'    => $days,
 		);
 	}
 
@@ -587,6 +711,8 @@ class PCT_Tour_Generator {
 			'lat'           => $item['lat'],
 			'lng'           => $item['lng'],
 			'link'          => $item['link'],
+			'gmaps_url'     => PCT_Maps::item_google_url( $item ),
+			'socials'       => $item['socials'],
 			'tags'          => $tags,
 			'time'          => $time,
 			'duration'      => $item['duration'],

@@ -13,6 +13,25 @@ class PCT_Rest {
 
 	public static function init() {
 		add_action( 'rest_api_init', array( __CLASS__, 'routes' ) );
+		add_filter( 'rest_pre_dispatch', array( __CLASS__, 'apply_language' ), 10, 3 );
+	}
+
+	/**
+	 * Honour ?pct_lang= / X-PCT-LANG for our own routes so all translated
+	 * strings in the response use the visitor's language.
+	 */
+	public static function apply_language( $result, $server, $request ) {
+		if ( 0 === strpos( (string) $request->get_route(), '/' . self::NS ) ) {
+			self::$request = $request;
+			$lang = $request->get_param( 'pct_lang' );
+			if ( ! $lang ) {
+				$lang = $request->get_header( 'x-pct-lang' );
+			}
+			if ( $lang ) {
+				PCT_I18n::set_current( $lang );
+			}
+		}
+		return $result;
 	}
 
 	public static function routes() {
@@ -25,6 +44,24 @@ class PCT_Rest {
 		register_rest_route( self::NS, '/form', array(
 			'methods'             => 'GET',
 			'callback'            => array( __CLASS__, 'form' ),
+			'permission_callback' => array( __CLASS__, 'visitor_permission' ),
+		) );
+
+		register_rest_route( self::NS, '/i18n', array(
+			'methods'             => 'GET',
+			'callback'            => array( __CLASS__, 'i18n' ),
+			'permission_callback' => '__return_true',
+		) );
+
+		register_rest_route( self::NS, '/i18n/translate', array(
+			'methods'             => 'POST',
+			'callback'            => array( __CLASS__, 'translate' ),
+			'permission_callback' => array( __CLASS__, 'visitor_permission' ),
+		) );
+
+		register_rest_route( self::NS, '/route', array(
+			'methods'             => 'POST',
+			'callback'            => array( __CLASS__, 'route' ),
 			'permission_callback' => array( __CLASS__, 'visitor_permission' ),
 		) );
 
@@ -81,6 +118,35 @@ class PCT_Rest {
 			'permission_callback' => array( __CLASS__, 'guide_permission' ),
 		) );
 
+		/* My Trip, My Vibe */
+		register_rest_route( self::NS, '/vibe/otp', array(
+			'methods'             => 'POST',
+			'callback'            => array( __CLASS__, 'vibe_otp' ),
+			'permission_callback' => array( __CLASS__, 'visitor_permission' ),
+		) );
+		register_rest_route( self::NS, '/vibe/otp/verify', array(
+			'methods'             => 'POST',
+			'callback'            => array( __CLASS__, 'vibe_otp_verify' ),
+			'permission_callback' => array( __CLASS__, 'visitor_permission' ),
+		) );
+		register_rest_route( self::NS, '/vibe/requests', array(
+			array(
+				'methods'             => 'GET',
+				'callback'            => array( __CLASS__, 'vibe_list' ),
+				'permission_callback' => array( __CLASS__, 'visitor_permission' ),
+			),
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'vibe_create' ),
+				'permission_callback' => array( __CLASS__, 'visitor_permission' ),
+			),
+		) );
+		register_rest_route( self::NS, '/vibe/requests/(?P<id>\d+)', array(
+			'methods'             => 'GET',
+			'callback'            => array( __CLASS__, 'vibe_status' ),
+			'permission_callback' => array( __CLASS__, 'visitor_permission' ),
+		) );
+
 		/* Admin */
 		register_rest_route( self::NS, '/admin/form-schema', array(
 			array(
@@ -119,6 +185,29 @@ class PCT_Rest {
 			'callback'            => array( __CLASS__, 'admin_guide_action' ),
 			'permission_callback' => array( __CLASS__, 'admin_permission' ),
 		) );
+		register_rest_route( self::NS, '/admin/ai-logs', array(
+			'methods'             => 'GET',
+			'callback'            => array( __CLASS__, 'admin_ai_logs' ),
+			'permission_callback' => array( __CLASS__, 'admin_permission' ),
+		) );
+		register_rest_route( self::NS, '/admin/ai-logs/(?P<id>\d+)', array(
+			'methods'             => 'GET',
+			'callback'            => function ( WP_REST_Request $r ) {
+				$row = PCT_AI_Log::get( absint( $r['id'] ) );
+				return $row ? rest_ensure_response( $row ) : new WP_Error( 'pct_not_found', __( 'Log entry not found.', 'personalized-city-tour' ), array( 'status' => 404 ) );
+			},
+			'permission_callback' => array( __CLASS__, 'admin_permission' ),
+		) );
+		register_rest_route( self::NS, '/admin/analytics/(?P<id>\d+)', array(
+			'methods'             => 'GET',
+			'callback'            => function ( WP_REST_Request $r ) {
+				$job = PCT_Analytics::get_job( absint( $r['id'] ) );
+				return $job ? rest_ensure_response( $job ) : new WP_Error( 'pct_not_found', __( 'Report not found.', 'personalized-city-tour' ), array( 'status' => 404 ) );
+			},
+			'permission_callback' => function () {
+				return PCT_Analytics::can_access();
+			},
+		) );
 		register_rest_route( self::NS, '/admin/active-city', array(
 			'methods'             => 'POST',
 			'callback'            => function ( WP_REST_Request $r ) {
@@ -140,12 +229,19 @@ class PCT_Rest {
 		return true;
 	}
 
-	public static function guide_permission() {
-		if ( ! PCT_Roles::is_approved_guide() ) {
-			return new WP_Error( 'pct_guide_required', __( 'Only approved local guides can do this.', 'personalized-city-tour' ), array( 'status' => 403 ) );
+	public static function guide_permission( $request = null ) {
+		if ( PCT_Roles::is_approved_guide() ) {
+			return true;
 		}
-		return true;
+		$profile = PCT_Guide_Profiles::current( $request instanceof WP_REST_Request ? $request : self::$request );
+		if ( $profile && PCT_Guide_Profiles::STATUS_REVOKED !== $profile['status'] ) {
+			return true;
+		}
+		return new WP_Error( 'pct_guide_required', __( 'Please register as a local guide first.', 'personalized-city-tour' ), array( 'status' => 403 ) );
 	}
+
+	/** @var WP_REST_Request|null Current request (set by rest_pre_dispatch for permission callbacks). */
+	private static $request = null;
 
 	public static function admin_permission() {
 		return current_user_can( 'pct_manage' );
@@ -154,16 +250,19 @@ class PCT_Rest {
 	/* ---------------------------------------------------------------- */
 
 	public static function cities() {
-		$out = array();
+		$out    = array();
+		$public = (bool) PCT_Settings::get( 'show_mymaps_public' );
 		foreach ( PCT_Data::published_cities() as $c ) {
 			$out[] = array(
-				'id'      => $c['id'],
-				'name'    => $c['name'],
-				'country' => $c['country'],
-				'lat'     => $c['lat'],
-				'lng'     => $c['lng'],
-				'zoom'    => $c['zoom'],
-				'mymaps'  => $c['mymaps'],
+				'id'        => $c['id'],
+				'name'      => $c['name'],
+				'country'   => $c['country'],
+				'lat'       => $c['lat'],
+				'lng'       => $c['lng'],
+				'zoom'      => $c['zoom'],
+				'mymaps'    => $public ? $c['mymaps'] : array(),
+				'channels'  => $c['channels'],
+				'gmaps_url' => $c['gmaps_url'],
 			);
 		}
 		return rest_ensure_response( $out );
@@ -171,6 +270,77 @@ class PCT_Rest {
 
 	public static function form() {
 		return rest_ensure_response( PCT_Form_Builder::get_schema() );
+	}
+
+	/**
+	 * Everything the frontend needs to switch language instantly:
+	 * UI strings, the (translated) form schema, categories and option labels.
+	 */
+	public static function i18n( WP_REST_Request $request ) {
+		$lang = PCT_I18n::set_current( $request->get_param( 'lang' ) ? $request->get_param( 'lang' ) : PCT_I18n::current() );
+		return rest_ensure_response(
+			array(
+				'lang'          => $lang,
+				'rtl'           => PCT_I18n::is_rtl( $lang ),
+				'calendar'      => PCT_I18n::calendar_for( $lang ),
+				'strings'       => PCT_Frontend::strings(),
+				'form'          => PCT_Settings::visitor_allowed() ? PCT_Form_Builder::get_schema() : null,
+				'categories'    => self::categories(),
+				'vibe'          => PCT_Vibe::enabled() ? array(
+					'fee'      => PCT_Vibe::settings()['fee_text'],
+					'vibes'    => PCT_Vibe::options_list( 'vibes' ),
+					'styles'   => PCT_Vibe::options_list( 'styles' ),
+					'subjects' => PCT_Vibe::options_list( 'subjects' ),
+				) : null,
+			)
+		);
+	}
+
+	/**
+	 * Optional online translation of dynamic texts (AI output, city data).
+	 */
+	public static function translate( WP_REST_Request $request ) {
+		if ( ! PCT_I18n::online_available() ) {
+			return new WP_Error( 'pct_no_translation', __( 'Online translation is not enabled.', 'personalized-city-tour' ), array( 'status' => 404 ) );
+		}
+		$limit = self::rate_limit( 'translate', 30, 10 * MINUTE_IN_SECONDS );
+		if ( is_wp_error( $limit ) ) {
+			return $limit;
+		}
+		$texts = array_slice( array_map( 'sanitize_textarea_field', (array) $request->get_param( 'texts' ) ), 0, 60 );
+		$out   = PCT_I18n::translate_texts( $texts, PCT_I18n::normalize( $request->get_param( 'target' ) ), sanitize_key( $request->get_param( 'source' ) ?: 'auto' ) );
+		if ( is_wp_error( $out ) ) {
+			return $out;
+		}
+		return rest_ensure_response( array( 'texts' => $out ) );
+	}
+
+	/**
+	 * Server-side routing proxy (keeps Mapbox/Google keys off the client).
+	 */
+	public static function route( WP_REST_Request $request ) {
+		$limit = self::rate_limit( 'route', 120, 10 * MINUTE_IN_SECONDS );
+		if ( is_wp_error( $limit ) ) {
+			return $limit;
+		}
+		$points = array();
+		foreach ( array_slice( (array) $request->get_param( 'points' ), 0, 25 ) as $p ) {
+			$lat = self::sanitize_coord( is_array( $p ) ? ( $p['lat'] ?? ( $p[0] ?? null ) ) : null, 90 );
+			$lng = self::sanitize_coord( is_array( $p ) ? ( $p['lng'] ?? ( $p[1] ?? null ) ) : null, 180 );
+			if ( '' !== $lat && '' !== $lng ) {
+				$points[] = array( (float) $lat, (float) $lng );
+			}
+		}
+		if ( count( $points ) < 2 ) {
+			return new WP_Error( 'pct_invalid', __( 'At least two points are required.', 'personalized-city-tour' ), array( 'status' => 400 ) );
+		}
+		$mode = in_array( $request->get_param( 'mode' ), array( 'walking', 'bicycling', 'driving', 'transit' ), true ) ? $request->get_param( 'mode' ) : 'walking';
+		$res  = PCT_Maps::route( $points, $mode );
+		if ( is_wp_error( $res ) ) {
+			$res->add_data( array( 'status' => 502 ) );
+			return $res;
+		}
+		return rest_ensure_response( $res );
 	}
 
 	public static function create_tour( WP_REST_Request $request ) {
@@ -186,16 +356,16 @@ class PCT_Rest {
 			$form->add_data( array_merge( (array) $form->get_error_data(), array( 'status' => 400 ) ) );
 			return $form;
 		}
-		$result = PCT_Tour_Generator::generate( $city_id, $form );
+		$result = PCT_Tour_Generator::generate( $city_id, $form, array( 'lang' => PCT_I18n::current() ) );
 		if ( is_wp_error( $result ) ) {
 			$result->add_data( array( 'status' => 422 ) );
 			return $result;
 		}
-		$saved = array( 'id' => 0, 'token' => '' );
+		$saved = array( 'id' => 0, 'token' => '', 'url' => '' );
 		if ( PCT_Settings::get( 'store_submissions' ) ) {
 			$saved = PCT_Tours::save( $city_id, $form, $result );
 			if ( is_wp_error( $saved ) ) {
-				$saved = array( 'id' => 0, 'token' => '' );
+				$saved = array( 'id' => 0, 'token' => '', 'url' => '' );
 			}
 		}
 		do_action( 'pct_tour_created', $saved['id'], $form, $result );
@@ -203,6 +373,7 @@ class PCT_Rest {
 			array(
 				'id'     => $saved['id'],
 				'token'  => $saved['token'],
+				'url'    => $saved['url'],
 				'result' => $result,
 			)
 		);
@@ -217,6 +388,7 @@ class PCT_Rest {
 			array(
 				'id'     => $tour['id'],
 				'token'  => $tour['token'],
+				'url'    => $tour['url'],
 				'result' => $tour['result'],
 			)
 		);
@@ -224,21 +396,27 @@ class PCT_Rest {
 
 	/* ---------------------------------------------------------------- */
 
-	public static function guide_status() {
-		$uid = get_current_user_id();
+	public static function guide_status( WP_REST_Request $request ) {
+		$uid     = get_current_user_id();
+		$profile = PCT_Guide_Profiles::current( $request );
+		$status  = $uid ? PCT_Roles::guide_status( $uid ) : '';
+		if ( $profile ) {
+			$status = $profile['status'];
+		}
 		return rest_ensure_response(
 			array(
-				'logged_in'    => (bool) $uid,
-				'is_guide'     => PCT_Roles::is_approved_guide(),
-				'status'       => $uid ? PCT_Roles::guide_status( $uid ) : '',
-				'can_apply'    => (bool) PCT_Settings::get( 'guide_registration' ),
-				'display_name' => $uid ? wp_get_current_user()->display_name : '',
-				'login_url'    => wp_login_url( self::current_url() ),
-				'logout_url'   => wp_logout_url( self::current_url() ),
-				'register_url' => get_option( 'users_can_register' ) ? wp_registration_url() : '',
-				'cities'       => PCT_Post_Types::cities(),
-				'categories'   => self::categories(),
-				'can_publish'  => current_user_can( 'publish_pct_events' ),
+				'logged_in'      => (bool) $uid,
+				'is_guide'       => PCT_Roles::is_approved_guide() || ( $profile && PCT_Guide_Profiles::STATUS_REVOKED !== $profile['status'] ),
+				'registered'     => (bool) $profile,
+				'verified'       => PCT_Roles::is_approved_guide() || ( $profile && PCT_Guide_Profiles::STATUS_APPROVED === $profile['status'] ),
+				'status'         => $status,
+				'can_apply'      => (bool) PCT_Settings::get( 'guide_registration' ),
+				'require_mobile' => (bool) PCT_Settings::get( 'guide_require_mobile', 1 ),
+				'display_name'   => $profile ? $profile['name'] : ( $uid ? wp_get_current_user()->display_name : '' ),
+				'logout_url'     => $uid ? wp_logout_url( self::current_url() ) : '',
+				'cities'         => PCT_Post_Types::cities(),
+				'categories'     => self::categories(),
+				'can_publish'    => current_user_can( 'publish_pct_events' ),
 			)
 		);
 	}
@@ -268,43 +446,33 @@ class PCT_Rest {
 		}
 
 		$uid = get_current_user_id();
-		if ( ! $uid ) {
-			$email = sanitize_email( $request->get_param( 'email' ) );
-			$name  = sanitize_text_field( $request->get_param( 'name' ) );
-			if ( ! is_email( $email ) || '' === $name ) {
-				return new WP_Error( 'pct_invalid', __( 'Name and a valid email are required.', 'personalized-city-tour' ), array( 'status' => 400 ) );
-			}
-			if ( email_exists( $email ) ) {
-				return new WP_Error( 'pct_exists', __( 'An account with this email already exists. Please log in and apply again.', 'personalized-city-tour' ), array( 'status' => 409 ) );
-			}
-			$login = sanitize_user( current( explode( '@', $email ) ), true );
-			$base  = $login ? $login : 'guide';
-			$i     = 1;
-			while ( username_exists( $login ) || '' === $login ) {
-				$login = $base . $i++;
-			}
-			$uid = wp_insert_user(
+		if ( ! $uid || ! user_can( $uid, 'edit_pct_events' ) ) {
+			// No-login registration: name + mobile, stored as a guide profile.
+			$created = PCT_Guide_Profiles::create(
 				array(
-					'user_login'   => $login,
-					'user_email'   => $email,
-					'display_name' => $name,
-					'first_name'   => $name,
-					'user_pass'    => wp_generate_password( 20 ),
-					'role'         => get_option( 'default_role', 'subscriber' ),
+					'name'      => $request->get_param( 'name' ),
+					'mobile'    => $request->get_param( 'mobile' ),
+					'email'     => $request->get_param( 'email' ),
+					'city_id'   => $request->get_param( 'city_id' ),
+					'languages' => $request->get_param( 'languages' ),
+					'note'      => $request->get_param( 'note' ),
+					'lang'      => PCT_I18n::current(),
 				)
 			);
-			if ( is_wp_error( $uid ) ) {
-				return $uid;
+			if ( is_wp_error( $created ) ) {
+				return $created;
 			}
-			wp_new_user_notification( $uid, null, 'user' );
-		} elseif ( PCT_Roles::is_approved_guide( $uid ) ) {
-			return rest_ensure_response( array( 'status' => PCT_Roles::STATUS_APPROVED ) );
+			return rest_ensure_response( $created );
+		}
+		if ( PCT_Roles::is_approved_guide( $uid ) ) {
+			return rest_ensure_response( array( 'status' => PCT_Roles::STATUS_APPROVED, 'token' => '' ) );
 		}
 
 		PCT_Roles::apply( $uid );
 		update_user_meta( $uid, '_pct_guide_city', absint( $request->get_param( 'city_id' ) ) );
 		update_user_meta( $uid, '_pct_guide_note', sanitize_textarea_field( (string) $request->get_param( 'note' ) ) );
 		update_user_meta( $uid, '_pct_guide_languages', sanitize_text_field( (string) $request->get_param( 'languages' ) ) );
+		update_user_meta( $uid, '_pct_guide_mobile', PCT_SMS::normalize_mobile( $request->get_param( 'mobile' ) ) );
 
 		if ( PCT_Settings::get( 'notify_admin_guides' ) ) {
 			$user = get_userdata( $uid );
@@ -323,20 +491,25 @@ class PCT_Rest {
 		}
 		do_action( 'pct_guide_applied', $uid );
 
-		return rest_ensure_response( array( 'status' => PCT_Roles::STATUS_PENDING ) );
+		return rest_ensure_response( array( 'status' => PCT_Roles::STATUS_PENDING, 'token' => '' ) );
 	}
 
-	public static function guide_events() {
-		$posts = get_posts(
-			array(
-				'post_type'      => PCT_Post_Types::EVENT,
-				'post_status'    => array( 'publish', 'pending', 'draft' ),
-				'author'         => get_current_user_id(),
-				'posts_per_page' => 50,
-				'orderby'        => 'date',
-				'order'          => 'DESC',
-			)
-		);
+	public static function guide_events( WP_REST_Request $request ) {
+		$profile = PCT_Guide_Profiles::current( $request );
+		if ( $profile && ! PCT_Roles::is_approved_guide() ) {
+			$posts = PCT_Guide_Profiles::events( $profile['id'] );
+		} else {
+			$posts = get_posts(
+				array(
+					'post_type'      => PCT_Post_Types::EVENT,
+					'post_status'    => array( 'publish', 'pending', 'draft' ),
+					'author'         => get_current_user_id(),
+					'posts_per_page' => 50,
+					'orderby'        => 'date',
+					'order'          => 'DESC',
+				)
+			);
+		}
 		$out   = array();
 		foreach ( $posts as $p ) {
 			$out[] = array(
@@ -357,7 +530,19 @@ class PCT_Rest {
 		if ( '' === $title || ! $city_id || ! get_post( $city_id ) || '' === $start ) {
 			return new WP_Error( 'pct_invalid', __( 'Title, city and start date are required.', 'personalized-city-tour' ), array( 'status' => 400 ) );
 		}
-		$status  = current_user_can( 'publish_pct_events' ) ? 'publish' : 'pending';
+		$profile = PCT_Roles::is_approved_guide() ? null : PCT_Guide_Profiles::current( $request );
+		$mobile  = PCT_SMS::normalize_mobile( $request->get_param( 'organizer_mobile' ) );
+		if ( $profile && '' === $mobile ) {
+			$mobile = $profile['mobile'];
+		}
+		if ( '' === $mobile && PCT_Settings::get( 'guide_require_mobile', 1 ) ) {
+			return new WP_Error( 'pct_invalid', __( 'The organizer mobile number is required.', 'personalized-city-tour' ), array( 'status' => 400 ) );
+		}
+		// Events from unverified / no-login guides always wait for review.
+		$status = ( ! $profile && current_user_can( 'publish_pct_events' ) ) ? 'publish' : 'pending';
+		if ( $profile && PCT_Guide_Profiles::STATUS_APPROVED === $profile['status'] && PCT_Settings::get( 'guide_auto_publish' ) ) {
+			$status = 'publish';
+		}
 		$post_id = wp_insert_post(
 			array(
 				'post_type'    => PCT_Post_Types::EVENT,
@@ -373,18 +558,21 @@ class PCT_Rest {
 		}
 		$acc = array_intersect( (array) $request->get_param( 'accessibility' ), array_keys( PCT_Data::accessibility_options() ) );
 		$meta = array(
-			'_pct_city_id'        => $city_id,
-			'_pct_organizer_name' => sanitize_text_field( (string) $request->get_param( 'organizer_name' ) ),
-			'_pct_organizer_url'  => esc_url_raw( (string) $request->get_param( 'organizer_url' ) ),
-			'_pct_event_url'      => esc_url_raw( (string) $request->get_param( 'event_url' ) ),
-			'_pct_start'          => $start,
-			'_pct_end'            => self::sanitize_datetime( $request->get_param( 'end' ) ),
-			'_pct_venue'          => sanitize_text_field( (string) $request->get_param( 'venue' ) ),
-			'_pct_address'        => sanitize_text_field( (string) $request->get_param( 'address' ) ),
-			'_pct_lat'            => self::sanitize_coord( $request->get_param( 'lat' ), 90 ),
-			'_pct_lng'            => self::sanitize_coord( $request->get_param( 'lng' ), 180 ),
-			'_pct_price_tier'     => in_array( $request->get_param( 'price_tier' ), array_keys( PCT_Data::price_tiers() ), true ) ? $request->get_param( 'price_tier' ) : '',
-			'_pct_accessibility'  => array_values( $acc ),
+			'_pct_city_id'          => $city_id,
+			'_pct_organizer_name'   => sanitize_text_field( (string) $request->get_param( 'organizer_name' ) ),
+			'_pct_organizer_mobile' => $mobile,
+			'_pct_organizer_url'    => esc_url_raw( (string) $request->get_param( 'organizer_url' ) ),
+			'_pct_event_url'        => esc_url_raw( (string) $request->get_param( 'event_url' ) ),
+			'_pct_gmaps_url'        => esc_url_raw( (string) $request->get_param( 'gmaps_url' ) ),
+			'_pct_start'            => $start,
+			'_pct_end'              => self::sanitize_datetime( $request->get_param( 'end' ) ),
+			'_pct_venue'            => sanitize_text_field( (string) $request->get_param( 'venue' ) ),
+			'_pct_address'          => sanitize_text_field( (string) $request->get_param( 'address' ) ),
+			'_pct_lat'              => self::sanitize_coord( $request->get_param( 'lat' ), 90 ),
+			'_pct_lng'              => self::sanitize_coord( $request->get_param( 'lng' ), 180 ),
+			'_pct_price_tier'       => in_array( $request->get_param( 'price_tier' ), array_keys( PCT_Data::price_tiers() ), true ) ? $request->get_param( 'price_tier' ) : '',
+			'_pct_accessibility'    => array_values( $acc ),
+			'_pct_guide_profile'    => $profile ? (int) $profile['id'] : 0,
 		);
 		foreach ( $meta as $k => $v ) {
 			update_post_meta( $post_id, $k, $v );
@@ -405,7 +593,12 @@ class PCT_Rest {
 
 	public static function guide_delete_event( WP_REST_Request $request ) {
 		$post = get_post( absint( $request['id'] ) );
-		if ( ! $post || PCT_Post_Types::EVENT !== $post->post_type || ! current_user_can( 'delete_post', $post->ID ) ) {
+		if ( ! $post || PCT_Post_Types::EVENT !== $post->post_type ) {
+			return new WP_Error( 'pct_forbidden', __( 'You cannot delete this event.', 'personalized-city-tour' ), array( 'status' => 403 ) );
+		}
+		$profile = PCT_Guide_Profiles::current( $request );
+		$owns    = $profile && (int) get_post_meta( $post->ID, '_pct_guide_profile', true ) === (int) $profile['id'];
+		if ( ! $owns && ! current_user_can( 'delete_post', $post->ID ) ) {
 			return new WP_Error( 'pct_forbidden', __( 'You cannot delete this event.', 'personalized-city-tour' ), array( 'status' => 403 ) );
 		}
 		wp_trash_post( $post->ID );
@@ -449,6 +642,98 @@ class PCT_Rest {
 
 	/* ---------------------------------------------------------------- */
 
+	public static function vibe_otp( WP_REST_Request $request ) {
+		$limit = self::rate_limit( 'otp', 5, 15 * MINUTE_IN_SECONDS );
+		if ( is_wp_error( $limit ) ) {
+			return $limit;
+		}
+		if ( ! PCT_Vibe::enabled() ) {
+			return new WP_Error( 'pct_disabled', __( 'This service is not available right now.', 'personalized-city-tour' ), array( 'status' => 403 ) );
+		}
+		$out = PCT_Vibe::otp_request( $request->get_param( 'mobile' ) );
+		return is_wp_error( $out ) ? $out : rest_ensure_response( $out );
+	}
+
+	public static function vibe_otp_verify( WP_REST_Request $request ) {
+		$limit = self::rate_limit( 'otp_verify', 15, 15 * MINUTE_IN_SECONDS );
+		if ( is_wp_error( $limit ) ) {
+			return $limit;
+		}
+		$out = PCT_Vibe::otp_verify( $request->get_param( 'mobile' ), $request->get_param( 'code' ) );
+		return is_wp_error( $out ) ? $out : rest_ensure_response( $out );
+	}
+
+	private static function vibe_visitor( WP_REST_Request $request ) {
+		$token = (string) $request->get_header( 'x-pct-visitor' );
+		if ( '' === $token ) {
+			$token = (string) $request->get_param( 'visitor_token' );
+		}
+		$mobile = PCT_Vibe::visitor_mobile( $token );
+		if ( '' === $mobile ) {
+			return new WP_Error( 'pct_otp_required', __( 'Please verify your mobile number first.', 'personalized-city-tour' ), array( 'status' => 401 ) );
+		}
+		return $mobile;
+	}
+
+	public static function vibe_create( WP_REST_Request $request ) {
+		$mobile = self::vibe_visitor( $request );
+		if ( is_wp_error( $mobile ) ) {
+			return $mobile;
+		}
+		$limit = self::rate_limit( 'vibe', 5, HOUR_IN_SECONDS );
+		if ( is_wp_error( $limit ) ) {
+			return $limit;
+		}
+		$files = $request->get_file_params();
+		$data  = array(
+			'mobile'  => $mobile,
+			'name'    => $request->get_param( 'name' ),
+			'email'   => $request->get_param( 'email' ),
+			'city_id' => $request->get_param( 'city_id' ),
+			'city'    => $request->get_param( 'city' ),
+			'vibe'    => $request->get_param( 'vibe' ),
+			'style'   => $request->get_param( 'style' ),
+			'subject' => $request->get_param( 'subject' ),
+			'notes'   => $request->get_param( 'notes' ),
+			'lang'    => PCT_I18n::current(),
+		);
+		$r = PCT_Vibe::create( $data, isset( $files['photo'] ) ? (array) $files['photo'] : array() );
+		if ( is_wp_error( $r ) ) {
+			return $r;
+		}
+		return rest_ensure_response( PCT_Vibe::public_view( $r ) );
+	}
+
+	public static function vibe_list( WP_REST_Request $request ) {
+		$mobile = self::vibe_visitor( $request );
+		if ( is_wp_error( $mobile ) ) {
+			return $mobile;
+		}
+		$out = array();
+		foreach ( PCT_Vibe::all( 200 ) as $r ) {
+			if ( $r['mobile'] === $mobile ) {
+				$out[] = PCT_Vibe::public_view( $r );
+			}
+		}
+		return rest_ensure_response( $out );
+	}
+
+	public static function vibe_status( WP_REST_Request $request ) {
+		$r = PCT_Vibe::get( absint( $request['id'] ) );
+		if ( ! $r ) {
+			return new WP_Error( 'pct_not_found', __( 'Request not found.', 'personalized-city-tour' ), array( 'status' => 404 ) );
+		}
+		$key    = (string) $request->get_param( 'k' );
+		$mobile = self::vibe_visitor( $request );
+		$owner  = ( ! is_wp_error( $mobile ) && $mobile === $r['mobile'] ) || ( $key && hash_equals( $r['token'], $key ) ) || current_user_can( 'pct_manage' );
+		if ( ! $owner ) {
+			return new WP_Error( 'pct_forbidden', __( 'Not allowed.', 'personalized-city-tour' ), array( 'status' => 403 ) );
+		}
+		return rest_ensure_response( PCT_Vibe::public_view( $r ) );
+	}
+
+	/* ---------------------------------------------------------------- */
+
 	public static function save_schema( WP_REST_Request $request ) {
 		$schema = $request->get_json_params();
 		$saved  = PCT_Form_Builder::save_schema( $schema );
@@ -462,6 +747,17 @@ class PCT_Rest {
 	public static function admin_guide_action( WP_REST_Request $request ) {
 		$uid    = absint( $request['id'] );
 		$action = $request['action'];
+		if ( 'profile' === $request->get_param( 'type' ) ) {
+			if ( ! PCT_Guide_Profiles::get( $uid ) ) {
+				return new WP_Error( 'pct_no_user', __( 'Registration not found.', 'personalized-city-tour' ), array( 'status' => 404 ) );
+			}
+			if ( 'remove' === $action ) {
+				PCT_Guide_Profiles::remove( $uid );
+				return rest_ensure_response( array( 'status' => 'removed' ) );
+			}
+			PCT_Guide_Profiles::set_status( $uid, 'approve' === $action ? PCT_Guide_Profiles::STATUS_APPROVED : PCT_Guide_Profiles::STATUS_REVOKED, (bool) $request->get_param( 'publish_events' ) );
+			return rest_ensure_response( array( 'status' => PCT_Guide_Profiles::get( $uid )['status'] ) );
+		}
 		if ( ! get_userdata( $uid ) ) {
 			return new WP_Error( 'pct_no_user', __( 'User not found.', 'personalized-city-tour' ), array( 'status' => 404 ) );
 		}
@@ -469,10 +765,30 @@ class PCT_Rest {
 		return rest_ensure_response( array( 'status' => PCT_Roles::guide_status( $uid ) ) );
 	}
 
+	public static function admin_ai_logs( WP_REST_Request $request ) {
+		return rest_ensure_response(
+			PCT_AI_Log::query(
+				array(
+					'kind'     => $request->get_param( 'kind' ),
+					'status'   => $request->get_param( 'status' ),
+					'page'     => $request->get_param( 'page' ),
+					'per_page' => $request->get_param( 'per_page' ),
+				)
+			)
+		);
+	}
+
 	/* ---------------------------------------------------------------- */
 
 	public static function sanitize_datetime( $value ) {
 		$value = is_string( $value ) ? trim( str_replace( 'T', ' ', $value ) ) : '';
+		// Accept Jalali dates (1404/06/30 10:30) from the Persian date picker.
+		if ( preg_match( '/^(\d{4}[\/-]\d{1,2}[\/-]\d{1,2})( \d{2}:\d{2})?$/', $value, $m ) ) {
+			$g = PCT_I18n::parse_date( $m[1] );
+			if ( '' !== $g ) {
+				$value = $g . ( isset( $m[2] ) ? $m[2] : '' );
+			}
+		}
 		if ( preg_match( '/^\d{4}-\d{2}-\d{2}( \d{2}:\d{2})?$/', $value ) ) {
 			return strlen( $value ) === 10 ? $value . ' 00:00' : $value;
 		}

@@ -51,7 +51,41 @@ class PCT_Data {
 			'lng'         => (float) get_post_meta( $post->ID, '_pct_lng', true ),
 			'zoom'        => (int) ( get_post_meta( $post->ID, '_pct_zoom', true ) ?: 13 ),
 			'mymaps'      => self::mymaps( $post->ID ),
+			'channels'    => self::links( $post->ID, '_pct_channels' ),
+			'gmaps_url'   => (string) get_post_meta( $post->ID, '_pct_gmaps_url', true ),
 			'timezone'    => (string) get_post_meta( $post->ID, '_pct_timezone', true ),
+		);
+	}
+
+	/**
+	 * Generic list of labelled links stored in post meta: [ {label, url} ].
+	 */
+	public static function links( $post_id, $meta_key ) {
+		$raw = get_post_meta( $post_id, $meta_key, true );
+		$out = array();
+		foreach ( (array) $raw as $row ) {
+			if ( ! is_array( $row ) || empty( $row['url'] ) ) {
+				continue;
+			}
+			$out[] = array(
+				'label' => (string) ( $row['label'] ?? '' ),
+				'url'   => (string) $row['url'],
+			);
+		}
+		return $out;
+	}
+
+	public static function social_networks() {
+		return array(
+			'instagram' => 'Instagram',
+			'telegram'  => 'Telegram',
+			'facebook'  => 'Facebook',
+			'x'         => 'X / Twitter',
+			'youtube'   => 'YouTube',
+			'tiktok'    => 'TikTok',
+			'whatsapp'  => 'WhatsApp',
+			'website'   => __( 'Website', 'personalized-city-tour' ),
+			'other'     => __( 'Other', 'personalized-city-tour' ),
 		);
 	}
 
@@ -114,6 +148,8 @@ class PCT_Data {
 			'lat'           => (float) get_post_meta( $post->ID, '_pct_lat', true ),
 			'lng'           => (float) get_post_meta( $post->ID, '_pct_lng', true ),
 			'link'          => (string) get_post_meta( $post->ID, '_pct_link', true ),
+			'gmaps_url'     => (string) get_post_meta( $post->ID, '_pct_gmaps_url', true ),
+			'socials'       => self::links( $post->ID, '_pct_socials' ),
 			'price_tier'    => (string) get_post_meta( $post->ID, '_pct_price_tier', true ),
 			'accessibility' => is_array( $acc ) ? array_values( $acc ) : array(),
 			'duration'      => (int) get_post_meta( $post->ID, '_pct_duration', true ),
