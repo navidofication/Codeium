@@ -166,6 +166,7 @@ class PCT_Planner {
 		}
 		$input = isset( $_POST['planner'] ) ? wp_unslash( (array) $_POST['planner'] ) : array(); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
 		update_option( self::OPTION, self::sanitize( $input ), false );
+		PCT_Tour_Generator::flush_cache();
 		wp_safe_redirect( add_query_arg( array( 'page' => 'pct-planner', 'pct_msg' => 'saved' ), admin_url( 'admin.php' ) ) );
 		exit;
 	}

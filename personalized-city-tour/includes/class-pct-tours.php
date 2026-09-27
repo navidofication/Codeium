@@ -27,8 +27,9 @@ class PCT_Tours {
 		$parts[] = PCT_I18n::format_date( current_time( 'timestamp' ), $lang, true );
 		$title   = implode( ' – ', $parts );
 
-		$slug_parts = array_filter( array( $name, $city, $date, str_replace( ':', '', $time ) ) );
-		$slug       = sanitize_title( implode( '-', $slug_parts ) );
+		// Permalink: FullNameCityDay1ddmmyy (slugified, made unique below).
+		$days = isset( $result['days'] ) && is_array( $result['days'] ) ? count( $result['days'] ) : 1;
+		$slug = sanitize_title( $name . $city . 'Day' . max( 1, $days ) . current_time( 'dmy' ) );
 		if ( '' === $slug ) {
 			$slug = sanitize_title( 'tour-' . $city_id . '-' . $date . '-' . $time );
 		}

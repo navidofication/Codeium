@@ -87,6 +87,8 @@ class PCT_Settings {
 			'ai_retry_invalid'         => 1,
 			'ai_rate_limit'            => 60,
 			'ai_rate_limit_ip'         => 6,
+			'ai_cache_ttl'             => 360,
+			'ai_batch_window'          => 30,
 			'ai_prompt_template'       => '',
 
 			/* maps */
@@ -299,6 +301,8 @@ class PCT_Settings {
 			$out['ai_retry_invalid']  = self::bool( $input, 'ai_retry_invalid' );
 			$out['ai_rate_limit']     = max( 0, min( 100000, absint( $input['ai_rate_limit'] ?? 60 ) ) );
 			$out['ai_rate_limit_ip']  = max( 0, min( 10000, absint( $input['ai_rate_limit_ip'] ?? 6 ) ) );
+			$out['ai_cache_ttl']      = max( 0, min( 43200, absint( $input['ai_cache_ttl'] ?? 360 ) ) );
+			$out['ai_batch_window']   = max( 0, min( 120, absint( $input['ai_batch_window'] ?? 30 ) ) );
 			$out['ai_prompt_template'] = sanitize_textarea_field( $input['ai_prompt_template'] ?? '' );
 			$allowed                  = array_keys( PCT_Tour_Generator::extract_fields() );
 			$out['ai_allowed_fields'] = array_values( array_intersect( array_map( 'sanitize_key', (array) ( $input['ai_allowed_fields'] ?? array() ) ), $allowed ) );

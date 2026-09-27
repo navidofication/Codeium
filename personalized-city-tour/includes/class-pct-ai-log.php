@@ -94,6 +94,18 @@ class PCT_AI_Log {
 		return (int) $wpdb->insert_id;
 	}
 
+	public static function record_cache_hit( $kind, $title ) {
+		return self::log(
+			array(
+				'kind'     => $kind,
+				'provider' => 'cache',
+				'model'    => '',
+				'status'   => 'cached',
+				'title'    => $title,
+			)
+		);
+	}
+
 	/**
 	 * Redact e-mail addresses, phone numbers and API keys from a string.
 	 */

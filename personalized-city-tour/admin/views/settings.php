@@ -242,6 +242,14 @@ $tab_url = function ( $key ) {
 				</td>
 			</tr>
 			<tr>
+				<th scope="row"><?php esc_html_e( 'On-demand usage controls', 'personalized-city-tour' ); ?></th>
+				<td>
+					<label><?php esc_html_e( 'Cache generated tours for', 'personalized-city-tour' ); ?> <input type="number" name="pct_settings[ai_cache_ttl]" value="<?php echo esc_attr( $settings['ai_cache_ttl'] ); ?>" min="0" max="43200" class="small-text" /> <?php esc_html_e( 'minutes', 'personalized-city-tour' ); ?></label>
+					<label><?php esc_html_e( 'Batching window', 'personalized-city-tour' ); ?> <input type="number" name="pct_settings[ai_batch_window]" value="<?php echo esc_attr( $settings['ai_batch_window'] ); ?>" min="0" max="120" class="small-text" /> <?php esc_html_e( 'seconds', 'personalized-city-tour' ); ?></label>
+					<p class="description"><?php esc_html_e( 'Identical preference payloads (same city, answers, language, rules and model) reuse the cached AI plan for the TTL; the traveller\'s name and contact details are never part of the cache key. Within the batching window, duplicate requests wait for the in-flight answer instead of calling the provider again. The cache is cleared automatically when city data or planner rules change. 0 disables either control.', 'personalized-city-tour' ); ?></p>
+				</td>
+			</tr>
+			<tr>
 				<th scope="row"><label for="pct_ai_prompt_template"><?php esc_html_e( 'Extra prompt instructions', 'personalized-city-tour' ); ?></label></th>
 				<td><textarea id="pct_ai_prompt_template" name="pct_settings[ai_prompt_template]" rows="4" class="large-text"><?php echo esc_textarea( $settings['ai_prompt_template'] ); ?></textarea>
 				<p class="description"><?php esc_html_e( 'Appended to the system prompt (tone, house rules, must-mention info). Planner rules are added automatically.', 'personalized-city-tour' ); ?></p></td>

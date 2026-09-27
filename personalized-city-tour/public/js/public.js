@@ -746,14 +746,32 @@
 	/* ------------------------------------------------------------------ */
 
 	function submitTour() {
+		var steps = t.progressSteps || [];
+		var list = el('ol', { class: 'pct-progress-steps' }, steps.map(function (s) { return el('li', { text: s }); }));
+		var idx = 0;
+		function tick() {
+			list.querySelectorAll('li').forEach(function (li, i) {
+				li.classList.toggle('is-done', i < idx);
+				li.classList.toggle('is-active', i === idx);
+			});
+		}
+		tick();
+		var timer = setInterval(function () {
+			if (idx < steps.length - 1) {
+				idx++;
+				tick();
+			}
+		}, 2500);
 		mount(el('div', {}, [
 			header(t.yourTour, null),
-			el('div', { class: 'pct-loading', 'aria-live': 'polite' }, [el('p', { text: t.generating })])
+			el('div', { class: 'pct-loading', 'aria-live': 'polite', 'aria-busy': 'true' }, [el('p', { text: t.generating }), list])
 		]));
 		api('/tours', 'POST', { city_id: state.city.id, form: state.values }).then(function (res) {
+			clearInterval(timer);
 			state.tour = res;
 			renderTour(res);
 		}).catch(function (e) {
+			clearInterval(timer);
 			if (e.data && e.data.fields) {
 				state.errors = e.data.fields;
 				var secs = visibleSections();
@@ -787,10 +805,12 @@
 	var tourMap = null; // active MapView instance
 
 	function renderTour(res) {
+		lastRender = function () { renderTour(res); };
 		var result = res.result;
 		var days = result.days || [];
 		var active = 0;
 		var visited = {};
+		var city = result.city || {};
 
 		var daysBox = el('aside', { class: 'pct-days', id: 'pct-days' });
 		var backdrop = el('div', { class: 'pct-days-backdrop', onClick: function () { openMenu(false); } });
@@ -819,8 +839,8 @@
 			});
 		}
 
-		var shareUrl = '';
-		if (res.id && res.token) {
+		var shareUrl = res.url || '';
+		if (!shareUrl && res.id && res.token) {
 			var u = new URL(window.location.href);
 			u.searchParams.set('pct_tour', res.id);
 			u.searchParams.set('pct_token', res.token);
@@ -877,8 +897,9 @@
 			if (s.organizer_url || s.organizer) {
 				links.push(s.organizer_url ? el('a', { href: s.organizer_url, target: '_blank', rel: 'noopener', text: t.organizer + ': ' + (s.organizer || '') }) : el('span', { class: 'pct-muted', text: t.organizer + ': ' + s.organizer }));
 			}
-			if (hasCoords(s)) {
-				links.push(el('a', { href: 'https://www.google.com/maps/search/?api=1&query=' + s.lat + ',' + s.lng, target: '_blank', rel: 'noopener', text: t.openGoogle }));
+			var gurl = s.gmaps_url || (hasCoords(s) ? 'https://www.google.com/maps/search/?api=1&query=' + s.lat + ',' + s.lng : '');
+			if (gurl) {
+				links.push(el('a', { href: gurl, target: '_blank', rel: 'noopener', text: t.openGoogle }));
 			}
 			var key = active + ':' + s.item_id;
 			var card = el('li', { class: 'pct-stop' + (isAlt ? ' is-alt' : '') + (visited[key] ? ' is-visited' : ''), 'data-stop': idx }, [
@@ -924,11 +945,15 @@
 				message.appendChild(el('div', { class: 'pct-block' }, [el('h4', { text: t.accessibility }), el('p', { text: d.accessibility_notes })]));
 			}
 			if (d.quick_search_hints && d.quick_search_hints.length) {
+				var searchBase = city.search_url || '';
 				message.appendChild(el('div', { class: 'pct-block' }, [
 					el('h4', { text: t.hints }),
 					el('div', { class: 'pct-hints' }, d.quick_search_hints.map(function (h) {
-						return el('a', { href: 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(h + ' ' + result.city.name), target: '_blank', rel: 'noopener', text: h });
-					}))
+						var href = searchBase ? searchBase + (searchBase.indexOf('?') > -1 ? '&' : '?') + 's=' + encodeURIComponent(h) : 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(h + ' ' + (city.name || ''));
+						return el('a', { href: href, target: '_blank', rel: 'noopener', text: h });
+					}).concat((city.channels || []).map(function (c) {
+						return el('a', { class: 'is-channel', href: c.url, target: '_blank', rel: 'noopener', text: c.label || c.url });
+					})))
 				]));
 			}
 
@@ -957,6 +982,9 @@
 				});
 			}
 			var links = el('div', { class: 'pct-map-links' });
+			if (city.gmaps_url) {
+				links.appendChild(el('a', { href: city.gmaps_url, target: '_blank', rel: 'noopener', text: t.cityOnGoogle }));
+			}
 			if (d.map && d.map.google_url) {
 				links.appendChild(el('a', { href: d.map.google_url, target: '_blank', rel: 'noopener', text: t.openGoogle }));
 			}
@@ -968,9 +996,9 @@
 			}
 
 			/* curated My Maps */
-			if (result.city.mymaps && result.city.mymaps.length) {
+			if (city.mymaps && city.mymaps.length) {
 				var mm = el('div', { class: 'pct-block pct-mymaps' }, [el('h4', { text: t.myMaps })]);
-				result.city.mymaps.forEach(function (m) {
+				city.mymaps.forEach(function (m) {
 					mm.appendChild(el('p', {}, [el('a', { href: m.url, target: '_blank', rel: 'noopener', text: m.label || m.url })]));
 					if (m.embed) {
 						mm.appendChild(el('iframe', { src: m.embed, loading: 'lazy', title: m.label || t.myMaps, referrerpolicy: 'no-referrer-when-downgrade' }));
@@ -984,7 +1012,7 @@
 		var layout = el('div', { class: 'pct-result' }, [
 			el('div', { class: 'pct-result-head' }, [
 				burger,
-				el('h2', { text: t.yourTour + (result.city && result.city.name ? ' · ' + result.city.name : '') })
+				el('h2', { text: result.title || (t.yourTour + (city.name ? ' · ' + city.name : '')) })
 			]),
 			daysBox,
 			message,
@@ -1001,16 +1029,23 @@
 	function MapView(container, day, city, hooks) {
 		var self = this;
 		this.day = day;
+		this.city = city || {};
 		this.hooks = hooks || {};
-		this.stops = day.stops.filter(hasCoords).map(function (s, i) {
+		this.stops = day.stops.filter(hasCoords).map(function (s) {
 			return { idx: day.stops.indexOf(s), stop: s, latlng: [parseFloat(s.lat), parseFloat(s.lng)] };
 		});
 		this.mode = 'preview';
 		this.watchId = null;
 		this.you = null;
-		this.youLine = null;
+		this.accuracy = null;
+		this.liveLine = null;   // blue visitor route (trimmed as the visitor moves)
+		this.liveCoords = null; // full geometry of the current blue route
+		this.liveKey = '';
+		this.goto = null;       // saved place currently navigated to
 		this.current = 0;
 		this.visited = {};
+		this.lastPos = null;
+		this.placeMarkers = {};
 
 		this.status = el('span', { class: 'pct-map-status', text: '' });
 		this.btnPreview = el('button', { type: 'button', class: 'pct-btn pct-btn-sm is-active', text: t.preview, onClick: function () { self.setMode('preview'); } });
@@ -1018,17 +1053,32 @@
 		container.appendChild(el('div', { class: 'pct-map-bar' }, [this.btnPreview, this.btnNav, this.status]));
 		this.canvas = el('div', { class: 'pct-map', role: 'region', 'aria-label': t.preview });
 		container.appendChild(this.canvas);
+		container.appendChild(el('div', { class: 'pct-legend' }, [
+			el('span', { class: 'pct-legend-item is-planned', text: t.plannedRoute }),
+			el('span', { class: 'pct-legend-item is-live', text: t.yourRoute })
+		]));
 		this.panel = el('div', { class: 'pct-nav-panel pct-hidden' });
 		container.appendChild(this.panel);
+		this.places = el('div', { class: 'pct-places' });
+		container.appendChild(this.places);
 
-		var center = this.stops.length ? this.stops[0].latlng : [parseFloat(city.lat) || 0, parseFloat(city.lng) || 0];
-		this.map = L.map(this.canvas, { scrollWheelZoom: false }).setView(center, city.zoom || 13);
+		this.map = L.map(this.canvas, { scrollWheelZoom: false });
 		L.tileLayer(cfg.maps.tileUrl || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: cfg.maps.attribution || '', maxZoom: 19 }).addTo(this.map);
 
 		this.markers = this.stops.map(function (s) {
-			var icon = L.divIcon({ className: '', html: '<div class="pct-stop-marker">' + (s.idx + 1) + '</div>', iconSize: [28, 28], iconAnchor: [14, 14] });
+			var first = s === self.stops[0];
+			var icon = L.divIcon({ className: '', html: '<div class="pct-stop-marker' + (first ? ' is-start' : '') + '">' + (s.idx + 1) + '</div>', iconSize: [28, 28], iconAnchor: [14, 14] });
 			var m = L.marker(s.latlng, { icon: icon, title: s.stop.name }).addTo(self.map);
-			m.bindPopup('<strong>' + escapeHtml(s.stop.name) + '</strong>' + (s.stop.time ? '<br>' + escapeHtml(s.stop.time) : '') + (s.stop.address ? '<br><small>' + escapeHtml(s.stop.address) + '</small>' : ''));
+			var popup = el('div', {}, [
+				el('strong', { text: s.stop.name }),
+				s.stop.time ? el('div', { text: s.stop.time }) : null,
+				s.stop.address ? el('small', { text: s.stop.address }) : null,
+				first ? el('div', {}, [el('button', { type: 'button', class: 'pct-btn pct-btn-sm', text: t.goToStart, onClick: function () {
+					self.map.closePopup();
+					self.setGoto('start', s.latlng, t.goToStart);
+				} })]) : null
+			]);
+			m.bindPopup(popup);
 			return m;
 		});
 		(day.alternatives || []).filter(hasCoords).forEach(function (s) {
@@ -1036,10 +1086,14 @@
 			L.marker([parseFloat(s.lat), parseFloat(s.lng)], { icon: icon, title: s.name, opacity: 0.85 }).addTo(self.map).bindPopup('<strong>' + escapeHtml(s.name) + '</strong>');
 		});
 
-		this.route = L.polyline(this.stops.map(function (s) { return s.latlng; }), { color: '#1f5fbf', weight: 4, opacity: 0.75, dashArray: '6 8' }).addTo(this.map);
+		// Planned tour route: green, static until the tour is re-generated.
+		this.route = L.polyline(this.stops.map(function (s) { return s.latlng; }), { color: '#067647', weight: 4, opacity: 0.8, dashArray: '6 8' }).addTo(this.map);
 		if (this.stops.length > 1) {
-			this.map.fitBounds(this.route.getBounds(), { padding: [30, 30] });
+			this.map.fitBounds(this.route.getBounds(), { padding: [30, 30], animate: false });
+		} else {
+			this.map.setView(this.stops.length ? this.stops[0].latlng : [parseFloat(city.lat) || 0, parseFloat(city.lng) || 0], city.zoom || 13);
 		}
+		this.drawPlaces();
 		this.fetchRoute();
 	}
 
@@ -1049,74 +1103,126 @@
 		});
 	}
 
+	/* Routing goes through the plugin's REST proxy (OSRM / Mapbox / Google) so no provider keys reach the browser. */
+	MapView.prototype.routeBetween = function (points, mode) {
+		return api('/route', 'POST', { points: points, mode: mode || (this.day.map && this.day.map.mode) || 'walking' }).then(function (r) {
+			if (!r || !r.coordinates || r.coordinates.length < 2) {
+				throw new Error('no route');
+			}
+			return r;
+		});
+	};
+
 	MapView.prototype.fetchRoute = function () {
 		var self = this;
 		if (this.stops.length < 2) {
 			return;
 		}
-		var mode = (this.day.map && this.day.map.mode) || 'walking';
-		var done = function (coords, distance, duration) {
-			self.route.setLatLngs(coords);
+		var straight = 0;
+		for (var i = 1; i < this.stops.length; i++) {
+			straight += haversine(this.stops[i - 1].latlng, this.stops[i].latlng);
+		}
+		this.status.textContent = formatDistance(straight);
+		if (cfg.maps.routing === 'straight') {
+			this.route.setStyle({ dashArray: null });
+			return;
+		}
+		this.routeBetween(this.stops.map(function (s) { return s.latlng; })).then(function (r) {
+			self.route.setLatLngs(r.coordinates);
 			self.route.setStyle({ dashArray: null });
-			self.status.textContent = sprintf(t.routeTotal, formatDistance(distance), formatDuration(duration));
-		};
-		var fail = function () {
-			self.status.textContent = t.routeFailed;
-		};
-
-		if (cfg.maps.routing === 'google' && typeof google !== 'undefined' && google.maps && google.maps.DirectionsService) {
-			var svc = new google.maps.DirectionsService();
-			var pts = this.stops.map(function (s) { return { lat: s.latlng[0], lng: s.latlng[1] }; });
-			var gm = { walking: 'WALKING', bicycling: 'BICYCLING', driving: 'DRIVING', transit: 'TRANSIT' }[mode] || 'WALKING';
-			svc.route({
-				origin: pts[0],
-				destination: pts[pts.length - 1],
-				waypoints: pts.slice(1, -1).map(function (p) { return { location: p, stopover: true }; }),
-				travelMode: gm
-			}, function (res, status) {
-				if (status !== 'OK' || !res.routes.length) {
-					fail();
-					return;
-				}
-				var r = res.routes[0];
-				var dist = 0;
-				var dur = 0;
-				r.legs.forEach(function (leg) { dist += leg.distance.value; dur += leg.duration.value; });
-				done(r.overview_path.map(function (p) { return [p.lat(), p.lng()]; }), dist, dur);
-			});
-			return;
-		}
-
-		if (cfg.maps.routing !== 'osrm' || !cfg.maps.osrm) {
-			var straight = 0;
-			for (var i = 1; i < this.stops.length; i++) {
-				straight += haversine(this.stops[i - 1].latlng, this.stops[i].latlng);
+			if (r.distance) {
+				self.status.textContent = sprintf(t.routeTotal, formatDistance(r.distance), formatDuration(r.duration));
 			}
-			this.status.textContent = formatDistance(straight);
-			return;
-		}
-
-		var profile = { walking: 'foot', bicycling: 'bike', driving: 'car', transit: 'car' }[mode] || 'foot';
-		var coords = this.stops.map(function (s) { return s.latlng[1] + ',' + s.latlng[0]; }).join(';');
-		var osrm = function (prof) {
-			return fetch(cfg.maps.osrm + '/route/v1/' + prof + '/' + coords + '?overview=full&geometries=geojson&steps=false')
-				.then(function (r) { return r.json(); })
-				.then(function (data) {
-					if (!data || data.code !== 'Ok' || !data.routes || !data.routes.length) {
-						throw new Error('no route');
-					}
-					var r = data.routes[0];
-					done(r.geometry.coordinates.map(function (c) { return [c[1], c[0]]; }), r.distance, r.duration);
-				});
-		};
-		osrm(profile).catch(function () {
-			// The public demo server only serves the "driving" profile; retry once with it.
-			if (profile !== 'driving') {
-				return osrm('driving').catch(fail);
-			}
-			fail();
+		}).catch(function () {
+			self.status.textContent = t.routeFailed + ' · ' + formatDistance(straight);
 		});
 	};
+
+	/* ---- device-scoped saved places (parking / bus / metro / accommodation) ---- */
+
+	MapView.prototype.placesKey = function () {
+		return 'places_' + (this.city.id || 0);
+	};
+	MapView.prototype.loadPlaces = function () {
+		try { return JSON.parse(LS.get(this.placesKey()) || '{}') || {}; } catch (e) { return {}; }
+	};
+	MapView.prototype.savePlace = function (type, latlng) {
+		var all = this.loadPlaces();
+		if (latlng) {
+			all[type] = { lat: latlng[0], lng: latlng[1], at: Date.now() };
+		} else {
+			delete all[type];
+			if (this.goto && this.goto.type === type) {
+				this.clearGoto();
+			}
+		}
+		LS.set(this.placesKey(), JSON.stringify(all));
+		this.drawPlaces();
+	};
+	MapView.prototype.drawPlaces = function () {
+		var self = this;
+		var types = t.placeTypes || {};
+		var all = this.loadPlaces();
+		clear(this.places);
+		Object.keys(this.placeMarkers).forEach(function (k) { self.map.removeLayer(self.placeMarkers[k]); });
+		this.placeMarkers = {};
+		var rows = Object.keys(types).map(function (type) {
+			var p = all[type];
+			if (p) {
+				var icon = L.divIcon({ className: '', html: '<div class="pct-place-marker" data-type="' + type + '">' + escapeHtml(types[type].charAt(0)) + '</div>', iconSize: [24, 24], iconAnchor: [12, 12] });
+				self.placeMarkers[type] = L.marker([p.lat, p.lng], { icon: icon, title: types[type] }).addTo(self.map).bindPopup('<strong>' + escapeHtml(types[type]) + '</strong>');
+			}
+			var isGoto = self.goto && self.goto.type === type;
+			return el('div', { class: 'pct-place' + (isGoto ? ' is-goto' : '') }, [
+				el('span', { class: 'pct-place-name', text: types[type] }),
+				el('span', { class: 'pct-place-actions' }, [
+					el('button', { type: 'button', class: 'pct-btn pct-btn-sm', text: t.saveHere, onClick: function () {
+						if (!self.lastPos) {
+							self.flash(t.needLocation);
+							return;
+						}
+						self.savePlace(type, self.lastPos);
+						self.flash(t.saved);
+					} }),
+					p ? el('button', { type: 'button', class: 'pct-btn pct-btn-sm is-primary', text: t.goTo, onClick: function () {
+						self.setGoto(type, [p.lat, p.lng], types[type]);
+					} }) : null,
+					p ? el('button', { type: 'button', class: 'pct-btn pct-btn-sm pct-btn-link', text: t.remove, onClick: function () { self.savePlace(type, null); } }) : null
+				])
+			]);
+		});
+		this.places.appendChild(el('details', { class: 'pct-places-box', open: this.goto ? true : undefined }, [
+			el('summary', {}, [el('strong', { text: t.savedPlaces }), el('span', { class: 'pct-muted pct-small', text: ' ' + t.savedPlacesSub })]),
+			el('div', { class: 'pct-place-list' }, rows),
+			this.goto ? el('button', { type: 'button', class: 'pct-btn pct-btn-sm', text: t.backToTour, onClick: function () { self.clearGoto(); } }) : null
+		]));
+	};
+	MapView.prototype.flash = function (msg) {
+		var self = this;
+		this.status.textContent = msg;
+		clearTimeout(this.flashTimer);
+		this.flashTimer = setTimeout(function () { if (self.lastPos) { self.onPosition(self.lastPos, self.lastAcc); } }, 2500);
+	};
+	MapView.prototype.setGoto = function (type, latlng, label) {
+		this.goto = { type: type, latlng: latlng, label: label };
+		this.resetLive();
+		this.drawPlaces();
+		if (this.mode !== 'navigate') {
+			this.setMode('navigate');
+		} else if (this.lastPos) {
+			this.onPosition(this.lastPos, this.lastAcc);
+		}
+	};
+	MapView.prototype.clearGoto = function () {
+		this.goto = null;
+		this.resetLive();
+		this.drawPlaces();
+		if (this.lastPos) {
+			this.onPosition(this.lastPos, this.lastAcc);
+		}
+	};
+
+	/* ---- modes ---- */
 
 	MapView.prototype.setMode = function (mode) {
 		var self = this;
@@ -1156,14 +1262,74 @@
 			navigator.geolocation.clearWatch(this.watchId);
 		}
 		this.watchId = null;
-		if (this.youLine) {
-			this.map.removeLayer(this.youLine);
-			this.youLine = null;
+		this.resetLive();
+	};
+
+	MapView.prototype.resetLive = function () {
+		if (this.liveLine) {
+			this.map.removeLayer(this.liveLine);
+			this.liveLine = null;
 		}
+		this.liveCoords = null;
+		this.liveKey = '';
+		this.followed = false;
+	};
+
+	/* ---- blue visitor route: routed from the live position, trimmed behind the visitor ---- */
+
+	MapView.prototype.updateLive = function (latlng, target) {
+		var self = this;
+		var key = target.latlng.join(',');
+		if (this.liveKey !== key) {
+			this.resetLive();
+			this.liveKey = key;
+		}
+		if (!this.liveLine) {
+			this.liveLine = L.polyline([latlng, target.latlng], { color: '#1f5fbf', weight: 5, opacity: 0.85, dashArray: '2 8' }).addTo(this.map);
+		}
+		if (this.liveCoords) {
+			// Drop everything behind the closest point on the route, then re-anchor on the visitor.
+			var best = 0;
+			var bestD = Infinity;
+			for (var i = 0; i < this.liveCoords.length; i++) {
+				var d = haversine(latlng, this.liveCoords[i]);
+				if (d < bestD) {
+					bestD = d;
+					best = i;
+				}
+			}
+			if (bestD > 60) {
+				// Off the computed route: request a fresh one from here.
+				this.liveCoords = null;
+				this.liveLine.setLatLngs([latlng, target.latlng]).setStyle({ dashArray: '2 8' });
+			} else {
+				this.liveCoords = this.liveCoords.slice(best);
+				this.liveLine.setLatLngs([latlng].concat(this.liveCoords.slice(1)));
+				return;
+			}
+		} else {
+			this.liveLine.setLatLngs([latlng, target.latlng]);
+		}
+		if (this.livePending || cfg.maps.routing === 'straight') {
+			return;
+		}
+		this.livePending = true;
+		this.routeBetween([latlng, target.latlng]).then(function (r) {
+			self.livePending = false;
+			if (self.liveKey !== key || !self.liveLine) {
+				return;
+			}
+			self.liveCoords = r.coordinates;
+			self.liveLine.setLatLngs([latlng].concat(r.coordinates.slice(1))).setStyle({ dashArray: null });
+		}).catch(function () {
+			self.livePending = false;
+		});
 	};
 
 	MapView.prototype.onPosition = function (latlng, accuracy) {
 		var self = this;
+		this.lastPos = latlng;
+		this.lastAcc = accuracy;
 		if (!this.you) {
 			var icon = L.divIcon({ className: '', html: '<div class="pct-you-marker"></div>', iconSize: [18, 18], iconAnchor: [9, 9] });
 			this.you = L.marker(latlng, { icon: icon, title: t.youAreHere, zIndexOffset: 1000 }).addTo(this.map);
@@ -1172,50 +1338,76 @@
 			this.you.setLatLng(latlng);
 			this.accuracy.setLatLng(latlng).setRadius(accuracy || 0);
 		}
-
-		// Advance to the next unvisited stop; mark stops reached within 40 m.
-		while (this.current < this.stops.length && this.visited[this.current]) {
-			this.current++;
+		if (this.mode !== 'navigate') {
+			return;
 		}
-		var target = this.stops[this.current];
-		if (!target) {
-			this.status.textContent = t.arriveAll;
-			clear(this.panel);
-			this.panel.appendChild(el('strong', { text: t.arriveAll }));
-			if (this.youLine) {
-				this.map.removeLayer(this.youLine);
-				this.youLine = null;
+
+		var target;
+		var mode = (this.day.map && this.day.map.mode) || 'walking';
+		if (this.goto) {
+			target = { latlng: this.goto.latlng, label: this.goto.label, isPlace: true };
+			if (haversine(latlng, target.latlng) < 40) {
+				this.status.textContent = t.reached;
+				this.clearGoto();
+				return;
 			}
-			return;
-		}
-		var dist = haversine(latlng, target.latlng);
-		if (dist < 40) {
-			this.markVisited(this.current);
-			this.status.textContent = t.reached;
-			this.onPosition(latlng, accuracy);
-			return;
+		} else {
+			// Advance to the next unvisited stop; mark stops reached within 40 m.
+			while (this.current < this.stops.length && this.visited[this.current]) {
+				this.current++;
+			}
+			var stopT = this.stops[this.current];
+			if (!stopT) {
+				this.status.textContent = t.arriveAll;
+				clear(this.panel);
+				this.panel.appendChild(el('strong', { text: t.arriveAll }));
+				this.resetLive();
+				return;
+			}
+			if (haversine(latlng, stopT.latlng) < 40) {
+				this.markVisited(this.current);
+				this.status.textContent = t.reached;
+				this.resetLive();
+				this.onPosition(latlng, accuracy);
+				return;
+			}
+			target = { latlng: stopT.latlng, label: (stopT.idx + 1) + '. ' + stopT.stop.name, stop: stopT };
+			if (this.hooks.onCurrent) {
+				this.hooks.onCurrent(stopT.idx);
+			}
 		}
 
-		if (this.hooks.onCurrent) {
-			this.hooks.onCurrent(target.idx);
-		}
-		if (!this.youLine) {
-			this.youLine = L.polyline([latlng, target.latlng], { color: '#067647', weight: 3, dashArray: '2 6' }).addTo(this.map);
+		var dist = haversine(latlng, target.latlng);
+		// The blue route only guides the visitor to the tour start (or a saved
+		// place); once on the tour the green planned route is followed.
+		var approaching = target.isPlace || this.current === 0;
+		if (approaching) {
+			this.updateLive(latlng, target);
 		} else {
-			this.youLine.setLatLngs([latlng, target.latlng]);
+			this.resetLive();
 		}
 		this.status.textContent = t.youAreHere + ' · ' + sprintf(t.distance, formatDistance(dist));
 		clear(this.panel);
 		this.panel.appendChild(el('div', {}, [
-			el('div', { class: 'pct-small pct-muted', text: t.nextStop }),
-			el('strong', { text: (target.idx + 1) + '. ' + target.stop.name }),
-			el('div', { class: 'pct-dist', text: sprintf(t.distance, formatDistance(dist)) + (target.stop.time ? ' · ' + target.stop.time : '') })
+			el('div', { class: 'pct-small pct-muted', text: target.isPlace ? t.goTo : t.nextStop }),
+			el('strong', { text: target.label }),
+			el('div', { class: 'pct-dist', text: sprintf(t.distance, formatDistance(dist)) + (target.stop && target.stop.stop.time ? ' · ' + target.stop.stop.time : '') })
 		]));
-		this.panel.appendChild(el('button', { type: 'button', class: 'pct-btn pct-btn-sm', text: t.markVisited, onClick: function () {
-			self.markVisited(self.current);
-			self.onPosition(latlng, accuracy);
-		} }));
-		this.panel.appendChild(el('a', { class: 'pct-btn pct-btn-sm', target: '_blank', rel: 'noopener', text: t.openGoogle, href: 'https://www.google.com/maps/dir/?api=1&origin=' + latlng[0] + ',' + latlng[1] + '&destination=' + target.latlng[0] + ',' + target.latlng[1] + '&travelmode=' + ((this.day.map && this.day.map.mode) || 'walking') }));
+		if (target.stop) {
+			this.panel.appendChild(el('button', { type: 'button', class: 'pct-btn pct-btn-sm', text: t.markVisited, onClick: function () {
+				self.markVisited(self.current);
+				self.resetLive();
+				self.onPosition(latlng, accuracy);
+			} }));
+			if (this.current > 0 && this.stops[0]) {
+				this.panel.appendChild(el('button', { type: 'button', class: 'pct-btn pct-btn-sm', text: t.goToStart, onClick: function () {
+					self.setGoto('start', self.stops[0].latlng, t.goToStart);
+				} }));
+			}
+		} else {
+			this.panel.appendChild(el('button', { type: 'button', class: 'pct-btn pct-btn-sm', text: t.backToTour, onClick: function () { self.clearGoto(); } }));
+		}
+		this.panel.appendChild(el('a', { class: 'pct-btn pct-btn-sm', target: '_blank', rel: 'noopener', text: t.openGoogle, href: 'https://www.google.com/maps/dir/?api=1&origin=' + latlng[0] + ',' + latlng[1] + '&destination=' + target.latlng[0] + ',' + target.latlng[1] + '&travelmode=' + mode }));
 
 		if (!this.followed) {
 			this.followed = true;
@@ -1237,6 +1429,7 @@
 
 	MapView.prototype.destroy = function () {
 		this.stopWatching();
+		clearTimeout(this.flashTimer);
 		this.map.remove();
 	};
 
@@ -1246,30 +1439,238 @@
 
 	var guide = { status: null, events: null };
 
+	/* ------------------------------------------------------------------ */
+	/* My Trip, My Vibe                                                    */
+	/* ------------------------------------------------------------------ */
+
+	var vibe = { mobile: LS.get('visitor_mobile') || '', requests: null, timer: null };
+
+	function vibeHeader() {
+		var h = header(t.vibe, backToEntry);
+		if (LS.get('visitor_token')) {
+			h.appendChild(el('button', { type: 'button', class: 'pct-btn pct-btn-sm', text: t.guideForget, onClick: function () {
+				LS.set('visitor_token', null);
+				LS.set('visitor_mobile', null);
+				vibe.requests = null;
+				startVibe();
+			} }));
+		}
+		return h;
+	}
+
 	function startVibe() {
 		lastRender = startVibe;
-		var mobile = el('input', { type: 'tel', dir: 'ltr', placeholder: t.mobileHint });
+		clearTimeout(vibe.timer);
+		if (!cfg.vibe) {
+			mount(el('div', {}, [header(t.vibe, backToEntry), notice(t.error, 'error')]));
+			return;
+		}
+		if (LS.get('visitor_token')) {
+			renderVibeHome();
+			return;
+		}
+		var mobile = el('input', { type: 'tel', dir: 'ltr', placeholder: t.mobileHint, autocomplete: 'tel', value: vibe.mobile });
+		var code = el('input', { type: 'text', inputmode: 'numeric', dir: 'ltr', autocomplete: 'one-time-code', maxlength: 6 });
 		var msg = el('div');
-		var view = el('div', {}, [
-			header(t.vibe, backToEntry),
-			el('p', { class: 'pct-muted', text: t.vibeSub }),
-			el('h3', { text: t.vibeOtpTitle }),
-			el('label', {}, [el('span', { text: t.mobile }), mobile]),
-			el('button', { type: 'button', class: 'pct-btn', text: t.sendCode, onClick: function () {
-				api('/vibe/otp', 'POST', { mobile: mobile.value }).then(function () {
-					clear(msg);
-					msg.appendChild(notice(t.vibeOtpSent));
+		var codeWrap = el('div', { class: 'pct-hidden' }, [
+			el('label', {}, [el('span', { text: t.code }), code]),
+			el('button', { type: 'button', class: 'pct-btn pct-btn-primary', text: t.verify, onClick: function () {
+				api('/vibe/otp/verify', 'POST', { mobile: mobile.value, code: code.value }).then(function (r) {
+					LS.set('visitor_token', r.token);
+					LS.set('visitor_mobile', r.mobile);
+					vibe.mobile = r.mobile;
+					renderVibeHome();
 				}).catch(function (e) {
 					clear(msg);
 					msg.appendChild(notice(e.message || t.error, 'error'));
 				});
-			} }),
-			msg
+			} })
 		]);
-		mount(view);
+		var sendBtn = el('button', { type: 'button', class: 'pct-btn', text: t.sendCode, onClick: function () {
+			sendBtn.disabled = true;
+			api('/vibe/otp', 'POST', { mobile: mobile.value }).then(function (r) {
+				clear(msg);
+				msg.appendChild(notice(t.vibeOtpSent + (r && r.dev_code ? ' (sandbox: ' + r.dev_code + ')' : ''), 'ok'));
+				codeWrap.classList.remove('pct-hidden');
+				code.focus();
+			}).catch(function (e) {
+				clear(msg);
+				msg.appendChild(notice(e.message || t.error, 'error'));
+			}).then(function () { sendBtn.disabled = false; });
+		} });
+		mount(el('div', { class: 'pct-vibe' }, [
+			header(t.vibe, backToEntry),
+			el('p', { class: 'pct-muted', text: t.vibeSub }),
+			cfg.vibe.fee ? el('p', { class: 'pct-fee', text: cfg.vibe.fee }) : null,
+			el('h3', { text: t.vibeOtpTitle }),
+			el('div', { class: 'pct-otp' }, [
+				el('label', {}, [el('span', { text: t.mobile }), mobile]),
+				sendBtn
+			]),
+			codeWrap,
+			msg
+		]));
 	}
 
+	function choiceGroup(name, options, current, onPick) {
+		return el('div', { class: 'pct-choices', role: 'radiogroup' }, (options || []).map(function (o) {
+			var input = el('input', { type: 'radio', name: name, value: o, checked: o === current, onChange: function (e) {
+				onPick(o);
+				e.target.parentNode.parentNode.querySelectorAll('.pct-choice').forEach(function (c) { c.classList.toggle('is-checked', c.querySelector('input').checked); });
+			} });
+			return el('label', { class: 'pct-choice' + (o === current ? ' is-checked' : '') }, [input, o]);
+		}));
+	}
+
+	function renderVibeHome() {
+		lastRender = renderVibeHome;
+		var v = cfg.vibe;
+		var picked = { vibe: (v.vibes || [])[0] || '', style: (v.styles || [])[0] || '', subject: (v.subjects || [])[0] || '' };
+		var msg = el('div');
+		var name = el('input', { type: 'text', autocomplete: 'name' });
+		var email = el('input', { type: 'email', autocomplete: 'email' });
+		var citySel = el('select', {}, [el('option', { value: '', text: t.labels.select })]);
+		(state.cities ? Promise.resolve(state.cities) : api('/cities').then(function (c) { state.cities = c; return c; })).then(function (cities) {
+			cities.forEach(function (c) { citySel.appendChild(el('option', { value: c.id, text: c.name })); });
+		}).catch(function () {});
+		var photo = el('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp', required: true });
+		var preview = el('img', { class: 'pct-photo-preview pct-hidden', alt: '' });
+		photo.addEventListener('change', function () {
+			var f = photo.files && photo.files[0];
+			if (!f) {
+				preview.classList.add('pct-hidden');
+				return;
+			}
+			preview.src = URL.createObjectURL(f);
+			preview.classList.remove('pct-hidden');
+		});
+		var notes = el('textarea', { rows: 3 });
+		var consent = el('input', { type: 'checkbox', required: true });
+		var submit = el('button', { type: 'submit', class: 'pct-btn pct-btn-primary', text: t.vibeSubmit });
+		var form = el('form', { class: 'pct-form pct-vibe-form', onSubmit: function (e) {
+			e.preventDefault();
+			if (!photo.files || !photo.files[0] || !consent.checked) {
+				return;
+			}
+			var fd = new FormData();
+			fd.append('photo', photo.files[0]);
+			fd.append('name', name.value);
+			fd.append('email', email.value);
+			fd.append('city_id', citySel.value);
+			fd.append('city', citySel.options[citySel.selectedIndex] ? citySel.options[citySel.selectedIndex].text : '');
+			fd.append('vibe', picked.vibe);
+			fd.append('style', picked.style);
+			fd.append('subject', picked.subject);
+			fd.append('notes', notes.value);
+			submit.disabled = true;
+			submit.textContent = t.saving;
+			api('/vibe/requests', 'POST', fd).then(function (r) {
+				clear(msg);
+				msg.appendChild(notice(t.vibeSent, 'ok'));
+				form.reset();
+				preview.classList.add('pct-hidden');
+				vibe.requests = [r].concat(vibe.requests || []);
+				drawRequests();
+				msg.scrollIntoView({ behavior: 'smooth', block: 'center' });
+			}).catch(function (err) {
+				clear(msg);
+				if (err.status === 401) {
+					LS.set('visitor_token', null);
+					startVibe();
+					return;
+				}
+				msg.appendChild(notice(err.message || t.error, 'error'));
+			}).then(function () {
+				submit.disabled = false;
+				submit.textContent = t.vibeSubmit;
+			});
+		} }, [
+			el('div', { class: 'pct-field' }, [el('label', { text: t.photo }), photo, el('p', { class: 'pct-help', text: sprintf(t.photoHint, v.maxMb || 8) }), preview]),
+			el('div', { class: 'pct-field' }, [el('span', { class: 'pct-label', text: t.vibeChoice }), choiceGroup('pct-vibe', v.vibes, picked.vibe, function (o) { picked.vibe = o; })]),
+			el('div', { class: 'pct-field' }, [el('span', { class: 'pct-label', text: t.styleChoice }), choiceGroup('pct-style', v.styles, picked.style, function (o) { picked.style = o; })]),
+			el('div', { class: 'pct-field' }, [el('span', { class: 'pct-label', text: t.subjectChoice }), choiceGroup('pct-subject', v.subjects, picked.subject, function (o) { picked.subject = o; })]),
+			el('div', { class: 'pct-grid-2' }, [
+				el('div', { class: 'pct-field' }, [el('label', { text: t.labels.name }), name]),
+				el('div', { class: 'pct-field' }, [el('label', { text: t.labels.email + ' (' + t.optional + ')' }), email])
+			]),
+			el('div', { class: 'pct-field' }, [el('label', { text: t.labels.city }), citySel]),
+			el('div', { class: 'pct-field' }, [el('label', { text: t.notes }), notes]),
+			el('label', { class: 'pct-consent' }, [consent, ' ' + t.consent]),
+			el('div', {}, [submit])
+		]);
+
+		var list = el('ul', { class: 'pct-requests' });
+		function drawRequests() {
+			clear(list);
+			if (!vibe.requests) {
+				list.appendChild(el('li', { class: 'pct-muted', text: '…' }));
+				return;
+			}
+			if (!vibe.requests.length) {
+				list.appendChild(el('li', { class: 'pct-muted', text: t.noRequests }));
+				return;
+			}
+			vibe.requests.forEach(function (r) {
+				var actions = [];
+				if (r.image_url) {
+					actions.push(el('a', { class: 'pct-btn pct-btn-sm', href: r.image_url, download: '', target: '_blank', rel: 'noopener', text: t.download }));
+					if (navigator.share) {
+						actions.push(el('button', { type: 'button', class: 'pct-btn pct-btn-sm', text: t.share, onClick: function () {
+							navigator.share({ title: t.vibe, url: r.image_url }).catch(function () {});
+						} }));
+					}
+				}
+				list.appendChild(el('li', { class: 'pct-request is-' + r.status }, [
+					r.image_url ? el('img', { src: r.image_url, alt: r.vibe + ' · ' + r.style, class: 'pct-request-img' }) : null,
+					el('div', { class: 'pct-request-body' }, [
+						el('strong', { text: [r.vibe, r.style].filter(Boolean).join(' · ') }),
+						el('span', { class: 'pct-badge is-' + r.status, text: r.label || r.status }),
+						r.error ? el('p', { class: 'pct-error', text: r.error }) : null,
+						(r.status === 'pending' || r.status === 'approved' || r.status === 'generating') ? el('div', { class: 'pct-progress-bar' }, [el('span')]) : null,
+						el('div', { class: 'pct-request-actions' }, actions)
+					])
+				]));
+			});
+		}
+		function loadRequests() {
+			return api('/vibe/requests').then(function (rows) {
+				vibe.requests = rows;
+				drawRequests();
+				var busy = rows.some(function (r) { return r.status === 'pending' || r.status === 'approved' || r.status === 'generating'; });
+				clearTimeout(vibe.timer);
+				if (busy && lastRender === renderVibeHome) {
+					vibe.timer = setTimeout(loadRequests, 15000);
+				}
+			}).catch(function (err) {
+				if (err.status === 401) {
+					LS.set('visitor_token', null);
+					startVibe();
+				}
+			});
+		}
+
+		mount(el('div', { class: 'pct-vibe' }, [
+			vibeHeader(),
+			el('p', { class: 'pct-muted', text: t.vibeSub }),
+			v.fee ? el('p', { class: 'pct-fee', text: v.fee }) : null,
+			msg,
+			el('h3', { text: t.vibeForm }),
+			form,
+			el('div', { class: 'pct-block' }, [
+				el('div', { class: 'pct-head' }, [el('h3', { text: t.myRequests }), el('button', { type: 'button', class: 'pct-btn pct-btn-sm', text: t.refresh, onClick: loadRequests })]),
+				list
+			])
+		]));
+		drawRequests();
+		loadRequests();
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* local guide (no login required)                                     */
+	/* ------------------------------------------------------------------ */
+
 	function startGuide() {
+		lastRender = startGuide;
 		mount(el('div', { class: 'pct-loading', text: '…' }));
 		api('/guide/status').then(function (s) {
 			guide.status = s;
@@ -1285,16 +1686,37 @@
 		});
 	}
 
+	function forgetGuideDevice() {
+		LS.set('guide_token', null);
+		guide.status = null;
+		guide.events = null;
+		startGuide();
+	}
+
 	function guideHeader() {
 		var s = guide.status;
 		var h = header(t.guideIntro, cfg.view === 'both' ? renderEntry : null);
 		if (s.logged_in) {
 			h.appendChild(el('span', { class: 'pct-muted pct-small', text: sprintf(t.guideWelcome, s.display_name) }));
 			h.appendChild(el('a', { href: s.logout_url, class: 'pct-btn pct-btn-sm', text: t.guideLogout }));
-		} else {
-			h.appendChild(el('a', { href: s.login_url, class: 'pct-btn pct-btn-sm', text: t.guideLogin }));
+		} else if (s.registered) {
+			h.appendChild(el('span', { class: 'pct-muted pct-small', text: sprintf(t.guideWelcome, s.display_name) }));
+			h.appendChild(el('button', { type: 'button', class: 'pct-btn pct-btn-sm', text: t.guideForget, onClick: forgetGuideDevice }));
 		}
 		return h;
+	}
+
+	function guideStatusBox() {
+		var s = guide.status;
+		if (!s.registered && !s.logged_in) {
+			return null;
+		}
+		var verified = s.verified;
+		return el('div', { class: 'pct-status-box' }, [
+			el('span', { class: 'pct-muted pct-small', text: t.guideStatus }),
+			el('span', { class: 'pct-badge is-' + (verified ? 'publish' : 'pending'), text: verified ? t.guideApproved : t.pending }),
+			verified ? null : el('p', { class: 'pct-small pct-muted', text: t.guidePendingSub })
+		]);
 	}
 
 	function cityOptions(selected) {
@@ -1305,34 +1727,34 @@
 	}
 
 	function renderGuideApply() {
+		lastRender = renderGuideApply;
 		var s = guide.status;
 		var view = el('div', {}, [guideHeader()]);
-		if (s.status === 'pending') {
-			view.appendChild(notice(t.guidePending));
+		if (s.status === 'revoked') {
+			view.appendChild(notice(t.guideRevoked, 'error'));
+			view.appendChild(el('button', { type: 'button', class: 'pct-btn pct-btn-sm', text: t.guideForget, onClick: forgetGuideDevice }));
 			mount(view);
 			return;
 		}
-		if (s.status === 'revoked') {
-			view.appendChild(notice(t.guideRevoked, 'error'));
+		if (s.logged_in && s.status === 'pending') {
+			view.appendChild(notice(t.guidePending));
 			mount(view);
 			return;
 		}
 		if (!s.can_apply) {
 			view.appendChild(notice(t.guideClosed));
-			if (!s.logged_in) {
-				view.appendChild(el('p', {}, [el('a', { href: s.login_url, class: 'pct-btn', text: t.guideLogin })]));
-			}
 			mount(view);
 			return;
 		}
 
 		var fields = {};
-		function field(id, label, control) {
+		function field(id, label, control, wide) {
 			control.id = 'pct-g-' + id;
 			fields[id] = control;
-			return el('div', { class: 'pct-field' }, [el('label', { for: control.id, text: label }), control]);
+			return el('div', { class: 'pct-field' + (wide ? ' pct-wide' : '') }, [el('label', { for: control.id, text: label }), control]);
 		}
 		var msg = el('div');
+		var btn = el('button', { type: 'submit', class: 'pct-btn pct-btn-primary', text: t.apply });
 		var form = el('form', { class: 'pct-form pct-guide-grid', onSubmit: function (e) {
 			e.preventDefault();
 			var body = {};
@@ -1341,11 +1763,10 @@
 			btn.textContent = t.saving;
 			api('/guide/apply', 'POST', body).then(function (r) {
 				clear(msg);
-				if (r.status === 'approved') {
-					startGuide();
-					return;
+				if (r.token) {
+					LS.set('guide_token', r.token);
 				}
-				mount(el('div', {}, [guideHeader(), notice(t.guideApplied, 'ok')]));
+				startGuide();
 			}).catch(function (err) {
 				clear(msg);
 				msg.appendChild(notice(err.message, 'error'));
@@ -1355,30 +1776,33 @@
 		} });
 		if (!s.logged_in) {
 			form.appendChild(field('name', t.labels.name, el('input', { type: 'text', required: true, autocomplete: 'name' })));
-			form.appendChild(field('email', t.labels.email, el('input', { type: 'email', required: true, autocomplete: 'email' })));
+			var mobileInput = el('input', { type: 'tel', dir: 'ltr', required: !!s.require_mobile, autocomplete: 'tel', placeholder: t.mobileHint });
+			form.appendChild(field('mobile', t.mobile + (s.require_mobile ? '' : ' (' + t.optional + ')'), mobileInput));
+			form.appendChild(field('email', t.labels.email + ' (' + t.optional + ')', el('input', { type: 'email', autocomplete: 'email' })));
+		} else {
+			form.appendChild(field('mobile', t.mobile, el('input', { type: 'tel', dir: 'ltr', required: !!s.require_mobile, autocomplete: 'tel', placeholder: t.mobileHint })));
 		}
 		form.appendChild(field('city_id', t.labels.city, el('select', {}, cityOptions(''))));
 		form.appendChild(field('languages', t.labels.languages, el('input', { type: 'text' })));
-		var noteWrap = field('note', t.labels.note, el('textarea', { rows: 4 }));
-		noteWrap.classList.add('pct-wide');
-		form.appendChild(noteWrap);
-		var btn = el('button', { type: 'submit', class: 'pct-btn pct-btn-primary', text: t.apply });
+		form.appendChild(field('note', t.labels.note, el('textarea', { rows: 4 }), true));
 		form.appendChild(el('div', { class: 'pct-wide' }, [btn]));
 
-		view.appendChild(el('h3', { text: t.guideApplyTitle }));
-		view.appendChild(el('p', { class: 'pct-muted', text: t.guideApplySub }));
-		if (!s.logged_in) {
-			view.appendChild(el('p', { class: 'pct-small' }, [t.guideHasAccount + ' ', el('a', { href: s.login_url, text: t.guideLogin })]));
-		}
+		view.appendChild(el('h3', { text: s.logged_in ? t.guideApplyTitle : t.guideRegister }));
+		view.appendChild(el('p', { class: 'pct-muted', text: s.logged_in ? t.guideApplySub : t.guideRegisterSub }));
 		view.appendChild(msg);
 		view.appendChild(form);
 		mount(view);
 	}
 
 	function renderGuideDashboard() {
+		lastRender = renderGuideDashboard;
 		var s = guide.status;
 		var view = el('div', {}, [guideHeader()]);
 		var msg = el('div');
+		var statusBox = guideStatusBox();
+		if (statusBox) {
+			view.appendChild(statusBox);
+		}
 		view.appendChild(msg);
 
 		/* my events */
@@ -1426,12 +1850,16 @@
 			return el('label', { class: 'pct-choice' }, [input, s.categories[slug]]);
 		}));
 		form.appendChild(el('div', { class: 'pct-field' }, [el('span', { class: 'pct-label', text: t.labels.categories }), catSel]));
-		form.appendChild(field('start', t.labels.start, el('input', { type: 'datetime-local', required: true })));
-		form.appendChild(field('end', t.labels.end, el('input', { type: 'datetime-local' })));
+		var startInput = el('input', { type: 'text', required: true, dir: 'ltr', autocomplete: 'off' });
+		var endInput = el('input', { type: 'text', dir: 'ltr', autocomplete: 'off' });
+		form.appendChild(field('start', t.labels.start, startInput));
+		form.appendChild(field('end', t.labels.end, endInput));
 		form.appendChild(field('description', t.labels.description, el('textarea', { rows: 4 }), true));
 		form.appendChild(field('organizer_name', t.labels.organizer_name, el('input', { type: 'text' })));
+		form.appendChild(field('organizer_mobile', t.organizerMobile + (s.registered || !s.require_mobile ? ' (' + t.optional + ')' : ''), el('input', { type: 'tel', dir: 'ltr', autocomplete: 'tel', placeholder: t.mobileHint, required: !!s.require_mobile && !s.registered })));
 		form.appendChild(field('organizer_url', t.labels.organizer_url, el('input', { type: 'url', placeholder: 'https://' })));
 		form.appendChild(field('event_url', t.labels.event_url, el('input', { type: 'url', placeholder: 'https://' }), true));
+		form.appendChild(field('gmaps_url', t.openGoogle, el('input', { type: 'url', dir: 'ltr', placeholder: 'https://maps.google.com/…' }), true));
 		form.appendChild(field('venue', t.labels.venue, el('input', { type: 'text' })));
 		form.appendChild(field('price_tier', t.labels.price_tier, el('select', {}, [el('option', { value: '', text: t.labels.select })].concat(Object.keys(t.priceTiers).map(function (k) {
 			return el('option', { value: k, text: t.priceTiers[k] });
@@ -1557,6 +1985,13 @@
 		view.appendChild(el('div', { class: 'pct-block' }, [el('h3', { text: t.myEvents }), list]));
 		mount(view);
 		initMap();
+		if (window.PCTDate) {
+			window.PCTDate.attach(startInput, { calendar: lang.calendar, withTime: true });
+			window.PCTDate.attach(endInput, { calendar: lang.calendar, withTime: true });
+		} else {
+			startInput.type = 'datetime-local';
+			endInput.type = 'datetime-local';
+		}
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -1576,6 +2011,10 @@
 	function boot() {
 		if (cfg.tourId && cfg.tourToken) {
 			loadSharedTour(cfg.tourId, cfg.tourToken);
+			return;
+		}
+		if (lang.list.length > 1 && !LS.get('lang_chosen') && cfg.view === 'both') {
+			renderLanguage();
 			return;
 		}
 		bootDefault();

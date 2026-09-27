@@ -572,6 +572,39 @@ class PCT_Tour_Generator {
 		$system  = self::system_prompt( $city, $lang );
 		$user    = wp_json_encode( $payload, JSON_UNESCAPED_UNICODE );
 
+		$cache_key = self::cache_key( $payload, $system );
+		$ttl       = (int) PCT_Settings::get( 'ai_cache_ttl', 0 ) * MINUTE_IN_SECONDS;
+		if ( $ttl > 0 ) {
+			$hit = get_transient( $cache_key );
+			if ( is_array( $hit ) ) {
+				PCT_AI_Log::record_cache_hit( 'tour', $payload['title'] );
+				return $hit;
+			}
+		}
+
+		// Batching window: identical payloads arriving while one is in flight wait
+		// for that answer instead of triggering another provider call.
+		$window = (int) PCT_Settings::get( 'ai_batch_window', 0 );
+		$lock   = $cache_key . '_lock';
+		if ( $window > 0 && get_transient( $lock ) ) {
+			$deadline = time() + min( $window, 120 );
+			while ( time() < $deadline ) {
+				sleep( 1 );
+				$hit = get_transient( $cache_key );
+				if ( is_array( $hit ) ) {
+					PCT_AI_Log::record_cache_hit( 'tour', $payload['title'] );
+					return $hit;
+				}
+				if ( ! get_transient( $lock ) ) {
+					break;
+				}
+			}
+			return new WP_Error( 'pct_ai_batched', __( 'An identical request is already being processed; the built-in planner answered this one.', 'personalized-city-tour' ) );
+		}
+		if ( $window > 0 ) {
+			set_transient( $lock, 1, min( $window, 120 ) + 5 );
+		}
+
 		$json = PCT_AI::complete_json(
 			$system,
 			$user,
@@ -584,10 +617,37 @@ class PCT_Tour_Generator {
 				},
 			)
 		);
+		if ( $window > 0 ) {
+			delete_transient( $lock );
+		}
 		if ( is_wp_error( $json ) ) {
 			return $json;
 		}
+		if ( $ttl > 0 ) {
+			// Cached per payload hash only; the payload never contains contact data
+			// unless the admin enabled sharing, and the title (with the name) is excluded.
+			set_transient( $cache_key, $json, $ttl );
+		}
 		return $json;
+	}
+
+	/**
+	 * Cache key for an AI plan: everything the model sees except the request
+	 * title (which carries the traveller's name/date) and the current date.
+	 */
+	private static function cache_key( array $payload, $system ) {
+		unset( $payload['title'], $payload['instructions']['today'] );
+		$gen = (int) get_option( 'pct_tour_cache_gen', 0 );
+		return 'pct_tour_' . md5( $gen . '|' . wp_json_encode( $payload ) . '|' . $system . '|' . PCT_Settings::get( 'ai_provider' ) . '|' . PCT_Settings::get( 'ai_model' ) );
+	}
+
+	/**
+	 * Invalidate every cached AI plan (city data or planner rules changed).
+	 * Bumps a generation counter that is part of every cache key, so stale
+	 * transients simply expire on their own.
+	 */
+	public static function flush_cache() {
+		update_option( 'pct_tour_cache_gen', (int) get_option( 'pct_tour_cache_gen', 0 ) + 1, false );
 	}
 
 	/* ---------------------------------------------------------------------

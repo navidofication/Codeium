@@ -15,6 +15,17 @@ class PCT_Meta_Boxes {
 		add_action( 'save_post_' . PCT_Post_Types::PLACE, array( __CLASS__, 'save_item' ), 10, 2 );
 		add_action( 'save_post_' . PCT_Post_Types::EVENT, array( __CLASS__, 'save_item' ), 10, 2 );
 		add_action( 'post_submitbox_misc_actions', array( __CLASS__, 'guide_notice' ) );
+		foreach ( array( PCT_Post_Types::CITY, PCT_Post_Types::PLACE, PCT_Post_Types::EVENT ) as $type ) {
+			add_action( 'save_post_' . $type, array( 'PCT_Tour_Generator', 'flush_cache' ), 20, 0 );
+		}
+		add_action( 'deleted_post', array( __CLASS__, 'flush_on_delete' ), 10, 2 );
+	}
+
+	public static function flush_on_delete( $post_id, $post = null ) {
+		$post = $post ? $post : get_post( $post_id );
+		if ( $post && in_array( $post->post_type, array( PCT_Post_Types::CITY, PCT_Post_Types::PLACE, PCT_Post_Types::EVENT ), true ) ) {
+			PCT_Tour_Generator::flush_cache();
+		}
 	}
 
 	public static function register() {

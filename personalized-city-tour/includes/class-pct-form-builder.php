@@ -94,7 +94,7 @@ class PCT_Form_Builder {
 		/* Section 1: basic info */
 		$basic = array(
 			array( 'id' => 'name', 'type' => 'text', 'label' => __( 'Full name', 'personalized-city-tour' ), 'required' => true ),
-			array( 'id' => 'email', 'type' => 'email', 'label' => __( 'Email', 'personalized-city-tour' ), 'required' => true ),
+			array( 'id' => 'email', 'type' => 'email', 'label' => __( 'Email (optional)', 'personalized-city-tour' ) ),
 			array( 'id' => 'phone', 'type' => 'tel', 'label' => __( 'Phone (optional)', 'personalized-city-tour' ) ),
 			array(
 				'id'       => 'group_type',

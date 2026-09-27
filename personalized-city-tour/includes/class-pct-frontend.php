@@ -234,6 +234,7 @@ class PCT_Frontend {
 			'guidePending'    => __( 'Your local guide application is awaiting approval.', 'personalized-city-tour' ),
 			'guideRevoked'    => __( 'Your local guide access has been revoked. Please contact the site administrator.', 'personalized-city-tour' ),
 			'guideClosed'     => __( 'Local guide registration is currently closed.', 'personalized-city-tour' ),
+			'optional'        => __( 'optional', 'personalized-city-tour' ),
 			'guideHasAccount' => __( 'Already have an account?', 'personalized-city-tour' ),
 			'guideWelcome'    => __( 'Welcome, %s', 'personalized-city-tour' ),
 			'newEvent'        => __( 'Register a new event', 'personalized-city-tour' ),
@@ -281,6 +282,7 @@ class PCT_Frontend {
 				'accommodation' => __( 'Accommodation', 'personalized-city-tour' ),
 			),
 			'backToTour'      => __( 'Back to the tour route', 'personalized-city-tour' ),
+			'goToStart'       => __( 'Go to the tour start', 'personalized-city-tour' ),
 			'decrease'        => __( 'Decrease', 'personalized-city-tour' ),
 			'increase'        => __( 'Increase', 'personalized-city-tour' ),
 			/* guide without login */
