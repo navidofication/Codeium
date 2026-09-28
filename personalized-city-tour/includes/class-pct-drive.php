@@ -1,0 +1,650 @@
+<?php
+/**
+ * Optional Google Drive connector: OAuth 2.0 (offline refresh token), folder
+ * mapping per export type, scheduled exports via WP Cron and retention.
+ *
+ * Every export is first written to wp-content/uploads/pct-exports (protected
+ * by .htaccess, served only through signed links) and then uploaded to Drive
+ * when the connector is connected and sandbox mode is off.
+ */
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
+class PCT_Drive {
+
+	const CRON_HOOK  = 'pct_drive_export';
+	const STATE_OPT  = 'pct_drive_state';
+	const LOG_OPT    = 'pct_drive_log';
+	const LATEST_OPT = 'pct_drive_latest';
+	const SCOPE      = 'https://www.googleapis.com/auth/drive.file';
+	const AUTH_URL   = 'https://accounts.google.com/o/oauth2/v2/auth';
+	const TOKEN_URL  = 'https://oauth2.googleapis.com/token';
+	const API_URL    = 'https://www.googleapis.com/drive/v3';
+	const UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink';
+
+	public static function init() {
+		add_action( self::CRON_HOOK, array( __CLASS__, 'run_scheduled' ) );
+		add_action( 'admin_post_pct_drive_connect', array( __CLASS__, 'handle_connect' ) );
+		add_action( 'admin_post_pct_drive_callback', array( __CLASS__, 'handle_callback' ) );
+		add_action( 'admin_post_nopriv_pct_drive_callback', array( __CLASS__, 'handle_callback' ) );
+		add_action( 'admin_post_pct_drive_disconnect', array( __CLASS__, 'handle_disconnect' ) );
+		add_action( 'admin_post_pct_drive_run', array( __CLASS__, 'handle_run' ) );
+	}
+
+	public static function export_types() {
+		return array(
+			'cities'   => __( 'City database (cities, places, events)', 'personalized-city-tour' ),
+			'forms'    => __( 'Submitted travel preference forms', 'personalized-city-tour' ),
+			'tours'    => __( 'Generated tours', 'personalized-city-tour' ),
+			'sessions' => __( 'Visitor sessions / audit summaries', 'personalized-city-tour' ),
+		);
+	}
+
+	public static function schedules() {
+		return array(
+			'none'       => __( 'Manual only', 'personalized-city-tour' ),
+			'hourly'     => __( 'Hourly', 'personalized-city-tour' ),
+			'twicedaily' => __( 'Twice daily', 'personalized-city-tour' ),
+			'daily'      => __( 'Daily', 'personalized-city-tour' ),
+			'weekly'     => __( 'Weekly', 'personalized-city-tour' ),
+		);
+	}
+
+	public static function redirect_uri() {
+		return admin_url( 'admin-post.php?action=pct_drive_callback' );
+	}
+
+	public static function configured() {
+		return '' !== (string) PCT_Settings::get( 'drive_client_id' ) && PCT_Settings::has_secret( 'drive_client_secret' );
+	}
+
+	public static function connected() {
+		return self::configured() && PCT_Settings::has_secret( 'drive_refresh_token' );
+	}
+
+	public static function sandbox() {
+		return (bool) PCT_Settings::get( 'drive_sandbox', 1 );
+	}
+
+	/**
+	 * (Re)schedule the export cron according to settings.
+	 */
+	public static function reschedule( $settings = null ) {
+		wp_clear_scheduled_hook( self::CRON_HOOK );
+		$schedule = PCT_Settings::get( 'drive_schedule', 'none' );
+		if ( 'none' === $schedule || ! PCT_Settings::get( 'drive_enabled' ) ) {
+			return;
+		}
+		if ( ! isset( wp_get_schedules()[ $schedule ] ) ) {
+			$schedule = 'daily';
+		}
+		wp_schedule_event( time() + MINUTE_IN_SECONDS, $schedule, self::CRON_HOOK );
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* OAuth                                                               */
+	/* ------------------------------------------------------------------ */
+
+	public static function handle_connect() {
+		check_admin_referer( 'pct_drive_connect' );
+		if ( ! current_user_can( 'pct_manage' ) || ! self::configured() ) {
+			wp_die( esc_html__( 'Configure the client ID and secret first.', 'personalized-city-tour' ) );
+		}
+		$state = wp_generate_password( 24, false, false );
+		set_transient( 'pct_drive_oauth_' . $state, get_current_user_id(), 15 * MINUTE_IN_SECONDS );
+		$url = add_query_arg(
+			array(
+				'client_id'     => PCT_Settings::get( 'drive_client_id' ),
+				'redirect_uri'  => self::redirect_uri(),
+				'response_type' => 'code',
+				'scope'         => self::SCOPE,
+				'access_type'   => 'offline',
+				'prompt'        => 'consent',
+				'state'         => $state,
+			),
+			self::AUTH_URL
+		);
+		wp_redirect( $url ); // phpcs:ignore WordPress.Security.SafeRedirect
+		exit;
+	}
+
+	public static function handle_callback() {
+		$state = isset( $_GET['state'] ) ? sanitize_text_field( wp_unslash( $_GET['state'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
+		$code  = isset( $_GET['code'] ) ? sanitize_text_field( wp_unslash( $_GET['code'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
+		$uid   = $state ? (int) get_transient( 'pct_drive_oauth_' . $state ) : 0;
+		delete_transient( 'pct_drive_oauth_' . $state );
+		$msg = 'drive_error';
+		if ( $uid && $code && user_can( $uid, 'pct_manage' ) ) {
+			$res = wp_remote_post(
+				self::TOKEN_URL,
+				array(
+					'timeout' => 20,
+					'body'    => array(
+						'code'          => $code,
+						'client_id'     => PCT_Settings::get( 'drive_client_id' ),
+						'client_secret' => PCT_Settings::secret( 'drive_client_secret' ),
+						'redirect_uri'  => self::redirect_uri(),
+						'grant_type'    => 'authorization_code',
+					),
+				)
+			);
+			$data = is_wp_error( $res ) ? array() : json_decode( wp_remote_retrieve_body( $res ), true );
+			if ( ! empty( $data['refresh_token'] ) ) {
+				PCT_Settings::set( 'drive_refresh_token', $data['refresh_token'] );
+				self::set_state( array( 'access_token' => $data['access_token'] ?? '', 'expires' => time() + (int) ( $data['expires_in'] ?? 0 ) - 60 ) );
+				$msg = 'drive_connected';
+			}
+		}
+		wp_safe_redirect( add_query_arg( array( 'page' => 'pct-settings', 'tab' => 'drive', 'pct_msg' => $msg ), admin_url( 'admin.php' ) ) );
+		exit;
+	}
+
+	public static function handle_disconnect() {
+		check_admin_referer( 'pct_drive_disconnect' );
+		if ( ! current_user_can( 'pct_manage' ) ) {
+			wp_die( esc_html__( 'Not allowed.', 'personalized-city-tour' ) );
+		}
+		PCT_Settings::set( 'drive_refresh_token', '' );
+		delete_option( self::STATE_OPT );
+		wp_safe_redirect( add_query_arg( array( 'page' => 'pct-settings', 'tab' => 'drive', 'pct_msg' => 'drive_disconnected' ), admin_url( 'admin.php' ) ) );
+		exit;
+	}
+
+	public static function handle_run() {
+		check_admin_referer( 'pct_drive_run' );
+		if ( ! current_user_can( 'pct_manage' ) ) {
+			wp_die( esc_html__( 'Not allowed.', 'personalized-city-tour' ) );
+		}
+		$results = self::run_exports();
+		$failed  = array_filter( $results, 'is_wp_error' );
+		wp_safe_redirect( add_query_arg( array( 'page' => 'pct-settings', 'tab' => 'drive', 'pct_msg' => $failed ? 'drive_partial' : 'drive_exported' ), admin_url( 'admin.php' ) ) );
+		exit;
+	}
+
+	private static function set_state( array $state ) {
+		update_option( self::STATE_OPT, array_merge( (array) get_option( self::STATE_OPT, array() ), $state ), false );
+	}
+
+	/**
+	 * Valid access token, refreshing when needed.
+	 */
+	public static function access_token() {
+		$state = (array) get_option( self::STATE_OPT, array() );
+		if ( ! empty( $state['access_token'] ) && ! empty( $state['expires'] ) && $state['expires'] > time() ) {
+			return $state['access_token'];
+		}
+		if ( ! self::connected() ) {
+			return new WP_Error( 'pct_drive_not_connected', __( 'Google Drive is not connected.', 'personalized-city-tour' ) );
+		}
+		$args = array(
+			'timeout' => 20,
+			'body'    => array(
+				'refresh_token' => PCT_Settings::secret( 'drive_refresh_token' ),
+				'client_id'     => PCT_Settings::get( 'drive_client_id' ),
+				'client_secret' => PCT_Settings::secret( 'drive_client_secret' ),
+				'grant_type'    => 'refresh_token',
+			),
+		);
+		$res  = wp_remote_post( self::TOKEN_URL, $args );
+		if ( is_wp_error( $res ) || (int) wp_remote_retrieve_response_code( $res ) >= 500 ) {
+			usleep( 500000 );
+			$res = wp_remote_post( self::TOKEN_URL, $args );
+		}
+		if ( is_wp_error( $res ) ) {
+			return $res;
+		}
+		$data = json_decode( wp_remote_retrieve_body( $res ), true );
+		if ( empty( $data['access_token'] ) ) {
+			$detail = isset( $data['error_description'] ) ? $data['error_description'] : ( isset( $data['error'] ) ? (string) $data['error'] : '' );
+			if ( 'invalid_grant' === ( $data['error'] ?? '' ) ) {
+				$detail = __( 'The refresh token was revoked or expired — disconnect and connect Google Drive again.', 'personalized-city-tour' );
+			}
+			return new WP_Error( 'pct_drive_token', $detail ? $detail : __( 'Could not refresh the Google Drive token.', 'personalized-city-tour' ) );
+		}
+		self::set_state( array( 'access_token' => $data['access_token'], 'expires' => time() + (int) ( $data['expires_in'] ?? 3600 ) - 60 ) );
+		return $data['access_token'];
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* Exports                                                             */
+	/* ------------------------------------------------------------------ */
+
+	public static function run_scheduled() {
+		if ( PCT_Settings::get( 'drive_enabled' ) ) {
+			self::run_exports();
+		}
+	}
+
+	/**
+	 * Local directory for export snapshots (always written, also when Drive is
+	 * connected, so the newest export is available for the AI link option).
+	 */
+	public static function local_dir() {
+		$upload = wp_upload_dir();
+		return trailingslashit( $upload['basedir'] ) . 'pct-exports';
+	}
+
+	/**
+	 * Export every enabled type. Returns [ type => file info | WP_Error ].
+	 * File info: { id, name, path, local (bool), drive_id, link }.
+	 */
+	public static function run_exports( array $types = array() ) {
+		$enabled = $types ? $types : (array) PCT_Settings::get( 'drive_exports', array() );
+		$results = array();
+		$log     = (array) get_option( self::LOG_OPT, array() );
+		$latest  = (array) get_option( self::LATEST_OPT, array() );
+		foreach ( $enabled as $type ) {
+			if ( ! isset( self::export_types()[ $type ] ) ) {
+				continue;
+			}
+			$payload = self::build_export( $type );
+			$name    = sprintf( 'pct-%s-%s.json', $type, current_time( 'Ymd-His' ) );
+			$result  = self::store( $type, $name, wp_json_encode( $payload, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT ), 'application/json' );
+			$results[ $type ] = $result;
+			$status           = 'error';
+			if ( ! is_wp_error( $result ) ) {
+				$status   = $result['drive_id'] ? 'uploaded' : ( $result['drive_error'] ? 'upload_failed' : ( self::sandbox() ? 'sandbox' : 'local' ) );
+				$previous = isset( $latest[ $type ] ) ? $latest[ $type ] : array();
+				$latest[ $type ] = array(
+					'name'     => $result['name'],
+					'path'     => $result['path'],
+					'drive_id' => $result['drive_id'] ? $result['drive_id'] : '',
+					'link'     => $result['drive_id'] ? $result['link'] : '',
+					'time'     => time(),
+					'records'  => is_array( $payload['records'] ) ? count( $payload['records'] ) : 0,
+				);
+				if ( ! $result['drive_id'] && ! empty( $previous['drive_id'] ) ) {
+					// Keep pointing at the last file that really reached Drive, marked with its own age.
+					$latest[ $type ]['drive_id']   = $previous['drive_id'];
+					$latest[ $type ]['link']       = $previous['link'];
+					$latest[ $type ]['drive_time'] = isset( $previous['drive_time'] ) ? $previous['drive_time'] : $previous['time'];
+				} elseif ( $result['drive_id'] ) {
+					$latest[ $type ]['drive_time'] = time();
+				}
+			}
+			$log[] = array(
+				'time'   => current_time( 'mysql' ),
+				'type'   => $type,
+				'file'   => $name,
+				'status' => $status,
+				'detail' => is_wp_error( $result ) ? $result->get_error_message() : ( $result['drive_id'] ? $result['drive_id'] : ( $result['drive_error'] ? $result['drive_error'] : $result['path'] ) ),
+			);
+		}
+		update_option( self::LOG_OPT, array_slice( $log, -50 ), false );
+		update_option( self::LATEST_OPT, $latest, false );
+		self::apply_retention();
+		return $results;
+	}
+
+	public static function log() {
+		return array_reverse( (array) get_option( self::LOG_OPT, array() ) );
+	}
+
+	/**
+	 * Newest successful export per type (from the last runs), verified against
+	 * the file system so stale entries are never offered as links.
+	 */
+	public static function latest( $type = null ) {
+		$latest = (array) get_option( self::LATEST_OPT, array() );
+		foreach ( $latest as $t => $row ) {
+			if ( empty( $row['path'] ) || ! file_exists( $row['path'] ) ) {
+				$latest[ $t ]['path'] = '';
+			}
+			if ( empty( $latest[ $t ]['path'] ) && empty( $row['drive_id'] ) ) {
+				unset( $latest[ $t ] );
+			}
+		}
+		if ( null !== $type ) {
+			return isset( $latest[ $type ] ) ? $latest[ $type ] : null;
+		}
+		return $latest;
+	}
+
+	public static function build_export( $type ) {
+		$out = array(
+			'plugin'    => 'personalized-city-tour',
+			'version'   => PCT_VERSION,
+			'type'      => $type,
+			'exported'  => current_time( 'mysql' ),
+			'site'      => home_url(),
+			'records'   => array(),
+		);
+		switch ( $type ) {
+			case 'cities':
+				foreach ( PCT_Data::published_cities() as $city ) {
+					$full           = PCT_Data::city( $city['id'] );
+					$full['places'] = PCT_Data::places( $city['id'] );
+					$full['events'] = PCT_Data::events( $city['id'] );
+					$out['records'][] = $full;
+				}
+				break;
+			case 'forms':
+			case 'tours':
+				$posts = get_posts( array( 'post_type' => PCT_Post_Types::TOUR, 'post_status' => 'any', 'numberposts' => 500, 'orderby' => 'date', 'order' => 'DESC' ) );
+				foreach ( $posts as $p ) {
+					$row = array(
+						'id'      => $p->ID,
+						'title'   => $p->post_title,
+						'date'    => $p->post_date,
+						'city_id' => (int) get_post_meta( $p->ID, '_pct_city_id', true ),
+					);
+					if ( 'forms' === $type ) {
+						$row['form'] = get_post_meta( $p->ID, '_pct_form', true );
+					} else {
+						$row['tour'] = get_post_meta( $p->ID, '_pct_result', true );
+					}
+					$out['records'][] = $row;
+				}
+				break;
+			case 'sessions':
+				$out['records'] = array(
+					'ai_stats'   => PCT_AI_Log::stats( 30 ),
+					'recent_ai'  => PCT_AI_Log::query( array( 'per_page' => 200 ) )['items'],
+					'tour_count' => (int) wp_count_posts( PCT_Post_Types::TOUR )->private,
+				);
+				break;
+		}
+		return apply_filters( 'pct_drive_export_payload', $out, $type );
+	}
+
+	/**
+	 * Write the local snapshot, then upload to Drive when connected and not in
+	 * sandbox mode. The local copy is kept even when the upload fails so that
+	 * the newest export is always available on the server.
+	 */
+	public static function store( $type, $name, $content, $mime ) {
+		$path = self::write_local( $name, $content );
+		if ( is_wp_error( $path ) ) {
+			return $path;
+		}
+		$result = array(
+			'id'          => $path,
+			'name'        => $name,
+			'path'        => $path,
+			'local'       => true,
+			'drive_id'    => '',
+			'link'        => '',
+			'drive_error' => '',
+		);
+		if ( self::sandbox() || ! self::connected() ) {
+			return $result;
+		}
+		$drive = self::upload( $type, $name, $content, $mime );
+		if ( is_wp_error( $drive ) ) {
+			$result['drive_error'] = $drive->get_error_message();
+			return $result;
+		}
+		$result['id']       = $drive['id'];
+		$result['drive_id'] = $drive['id'];
+		$result['link']     = $drive['link'];
+		return $result;
+	}
+
+	/**
+	 * Write one file into the protected uploads/pct-exports directory.
+	 *
+	 * @return string|WP_Error Absolute path.
+	 */
+	public static function write_local( $name, $content ) {
+		$dir = self::local_dir();
+		if ( ! wp_mkdir_p( $dir ) ) {
+			return new WP_Error( 'pct_drive_dir', __( 'Could not create the export directory.', 'personalized-city-tour' ) );
+		}
+		if ( ! file_exists( $dir . '/index.html' ) ) {
+			file_put_contents( $dir . '/index.html', '' ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		}
+		if ( ! file_exists( $dir . '/.htaccess' ) ) {
+			file_put_contents( $dir . '/.htaccess', "Require all denied\nDeny from all\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		}
+		$path = $dir . '/' . sanitize_file_name( $name );
+		if ( false === file_put_contents( $path, $content ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions
+			return new WP_Error( 'pct_drive_write', __( 'Could not write the export file.', 'personalized-city-tour' ) );
+		}
+		return $path;
+	}
+
+	/**
+	 * Multipart upload with one retry on transient failures.
+	 *
+	 * @return array|WP_Error { id, name, link }
+	 */
+	private static function upload( $type, $name, $content, $mime ) {
+		$folders = (array) PCT_Settings::get( 'drive_folders', array() );
+		$meta    = array( 'name' => $name, 'mimeType' => $mime );
+		if ( ! empty( $folders[ $type ] ) ) {
+			$meta['parents'] = array( $folders[ $type ] );
+		}
+		$boundary = 'pct' . wp_generate_password( 16, false, false );
+		$body     = "--$boundary\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" . wp_json_encode( $meta )
+			. "\r\n--$boundary\r\nContent-Type: $mime\r\n\r\n" . $content . "\r\n--$boundary--";
+		$data = self::api(
+			'POST',
+			self::UPLOAD_URL,
+			array(
+				'timeout' => 60,
+				'headers' => array( 'Content-Type' => 'multipart/related; boundary=' . $boundary ),
+				'body'    => $body,
+			)
+		);
+		if ( is_wp_error( $data ) ) {
+			return $data;
+		}
+		if ( empty( $data['id'] ) ) {
+			return new WP_Error( 'pct_drive_upload', __( 'Upload failed: Google Drive returned no file id.', 'personalized-city-tour' ) );
+		}
+		$link = (string) ( $data['webViewLink'] ?? '' );
+		if ( PCT_Settings::get( 'ai_attach_drive_links' ) ) {
+			$shared = self::share_public( $data['id'] );
+			if ( ! is_wp_error( $shared ) && ! empty( $shared['link'] ) ) {
+				$link = $shared['link'];
+			}
+		}
+		return array( 'id' => $data['id'], 'name' => $data['name'] ?? $name, 'link' => $link );
+	}
+
+	/**
+	 * Share a Drive file as "anyone with the link → viewer" and return the
+	 * direct download link the AI can fetch.
+	 *
+	 * @return array|WP_Error { link }
+	 */
+	public static function share_public( $file_id ) {
+		$perm = self::api(
+			'POST',
+			self::API_URL . '/files/' . rawurlencode( $file_id ) . '/permissions',
+			array(
+				'timeout' => 20,
+				'headers' => array( 'Content-Type' => 'application/json' ),
+				'body'    => wp_json_encode( array( 'role' => 'reader', 'type' => 'anyone' ) ),
+			)
+		);
+		if ( is_wp_error( $perm ) ) {
+			return $perm;
+		}
+		$info = self::api( 'GET', add_query_arg( 'fields', 'id,webViewLink,webContentLink', self::API_URL . '/files/' . rawurlencode( $file_id ) ), array( 'timeout' => 20 ) );
+		if ( is_wp_error( $info ) ) {
+			return $info;
+		}
+		$link = (string) ( $info['webContentLink'] ?? $info['webViewLink'] ?? '' );
+		return array( 'link' => $link ? $link : 'https://drive.google.com/uc?export=download&id=' . rawurlencode( $file_id ) );
+	}
+
+	/**
+	 * Authenticated Drive API call returning decoded JSON. Retries once on
+	 * network errors, 429 and 5xx; refreshes the token once on 401.
+	 *
+	 * @return array|WP_Error
+	 */
+	public static function api( $method, $url, array $args = array() ) {
+		$token = self::access_token();
+		if ( is_wp_error( $token ) ) {
+			return $token;
+		}
+		$last = null;
+		for ( $attempt = 1; $attempt <= 3; $attempt++ ) {
+			$req                             = $args;
+			$req['method']                   = $method;
+			$req['headers']                  = isset( $args['headers'] ) ? $args['headers'] : array();
+			$req['headers']['Authorization'] = 'Bearer ' . $token;
+			$req['timeout']                  = isset( $args['timeout'] ) ? $args['timeout'] : 20;
+			$res                             = wp_remote_request( $url, $req );
+			if ( is_wp_error( $res ) ) {
+				$last = $res;
+				if ( $attempt < 3 ) {
+					usleep( 400000 * $attempt );
+					continue;
+				}
+				break;
+			}
+			$code = (int) wp_remote_retrieve_response_code( $res );
+			$body = wp_remote_retrieve_body( $res );
+			$data = json_decode( $body, true );
+			if ( $code >= 200 && $code < 300 ) {
+				return is_array( $data ) ? $data : array( 'raw' => $body );
+			}
+			$msg  = isset( $data['error']['message'] ) ? $data['error']['message'] : wp_remote_retrieve_response_message( $res );
+			/* translators: 1: HTTP status, 2: Google error message */
+			$last = new WP_Error( 'pct_drive_http', sprintf( __( 'Google Drive returned HTTP %1$s: %2$s', 'personalized-city-tour' ), $code, $msg ), array( 'status' => $code ) );
+			if ( 401 === $code && 1 === $attempt ) {
+				update_option( self::STATE_OPT, array_merge( (array) get_option( self::STATE_OPT, array() ), array( 'access_token' => '', 'expires' => 0 ) ), false );
+				$token = self::access_token();
+				if ( is_wp_error( $token ) ) {
+					return $token;
+				}
+				continue;
+			}
+			if ( ( 429 === $code || $code >= 500 ) && $attempt < 3 ) {
+				usleep( 400000 * $attempt );
+				continue;
+			}
+			break;
+		}
+		return $last;
+	}
+
+	/**
+	 * Connection diagnostics for the settings page. Never returns secrets.
+	 *
+	 * @return array List of { label, status: ok|warn|error|skip, detail }.
+	 */
+	public static function diagnose() {
+		$checks   = array();
+		$check    = function ( $label, $status, $detail = '' ) use ( &$checks ) {
+			$checks[] = array( 'label' => $label, 'status' => $status, 'detail' => (string) $detail );
+		};
+		$enabled  = (bool) PCT_Settings::get( 'drive_enabled' );
+		$sandbox  = self::sandbox();
+		$check( __( 'Connector enabled', 'personalized-city-tour' ), $enabled ? 'ok' : 'warn', $enabled ? '' : __( 'Scheduled exports are off; manual runs and save-triggered snapshots still work.', 'personalized-city-tour' ) );
+		$check( __( 'Client ID & secret', 'personalized-city-tour' ), self::configured() ? 'ok' : ( $sandbox ? 'warn' : 'error' ), self::configured() ? '' : __( 'Enter the OAuth client ID and secret from Google Cloud Console.', 'personalized-city-tour' ) );
+		$check( __( 'Redirect URI', 'personalized-city-tour' ), 'ok', self::redirect_uri() );
+
+		$dir = self::local_dir();
+		$ok  = wp_mkdir_p( $dir ) && is_writable( $dir );
+		$check( __( 'Local export folder writable', 'personalized-city-tour' ), $ok ? 'ok' : 'error', $dir );
+
+		$cron_off = defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON;
+		$next     = wp_next_scheduled( self::CRON_HOOK );
+		$check(
+			__( 'Scheduled export', 'personalized-city-tour' ),
+			$next ? ( $cron_off ? 'warn' : 'ok' ) : 'skip',
+			$next ? sprintf( /* translators: %s: date */ __( 'Next run %s', 'personalized-city-tour' ), wp_date( 'Y-m-d H:i', $next ) ) . ( $cron_off ? ' — ' . __( 'DISABLE_WP_CRON is set; make sure a system cron calls wp-cron.php.', 'personalized-city-tour' ) : '' ) : __( 'No schedule (manual only).', 'personalized-city-tour' )
+		);
+
+		$sync = PCT_Sync::status();
+		$check(
+			__( 'Save-triggered refresh', 'personalized-city-tour' ),
+			'failed' === $sync['state'] ? 'error' : ( 'pending' === $sync['state'] ? 'warn' : 'ok' ),
+			PCT_Sync::describe( $sync )
+		);
+
+		if ( $sandbox ) {
+			$check( __( 'Sandbox mode', 'personalized-city-tour' ), 'warn', __( 'Exports are written locally only; disable sandbox to upload to Google Drive.', 'personalized-city-tour' ) );
+			return $checks;
+		}
+		if ( ! self::connected() ) {
+			$check( __( 'Google account', 'personalized-city-tour' ), 'error', __( 'Not connected — click "Connect Google Drive".', 'personalized-city-tour' ) );
+			return $checks;
+		}
+		$token = self::access_token();
+		if ( is_wp_error( $token ) ) {
+			$check( __( 'OAuth token refresh', 'personalized-city-tour' ), 'error', $token->get_error_message() );
+			return $checks;
+		}
+		$check( __( 'OAuth token refresh', 'personalized-city-tour' ), 'ok' );
+
+		$about = self::api( 'GET', add_query_arg( 'fields', 'user(emailAddress),storageQuota(limit,usage)', self::API_URL . '/about' ), array( 'timeout' => 15 ) );
+		if ( is_wp_error( $about ) ) {
+			$check( __( 'Drive API reachable', 'personalized-city-tour' ), 'error', $about->get_error_message() );
+			return $checks;
+		}
+		$email = (string) ( $about['user']['emailAddress'] ?? '' );
+		$quota = isset( $about['storageQuota']['usage'], $about['storageQuota']['limit'] ) && (float) $about['storageQuota']['limit'] > 0
+			? sprintf( '%s / %s', size_format( (float) $about['storageQuota']['usage'] ), size_format( (float) $about['storageQuota']['limit'] ) )
+			: '';
+		$check( __( 'Drive API reachable', 'personalized-city-tour' ), 'ok', trim( ( $email ? self::mask_email( $email ) : '' ) . ( $quota ? ' · ' . $quota : '' ) ) );
+
+		foreach ( (array) PCT_Settings::get( 'drive_folders', array() ) as $type => $folder ) {
+			if ( '' === (string) $folder ) {
+				continue;
+			}
+			$info  = self::api( 'GET', add_query_arg( 'fields', 'id,name,mimeType,trashed', self::API_URL . '/files/' . rawurlencode( $folder ) ), array( 'timeout' => 15 ) );
+			$label = sprintf( /* translators: %s: export type */ __( 'Folder for "%s"', 'personalized-city-tour' ), self::export_types()[ $type ] ?? $type );
+			if ( is_wp_error( $info ) ) {
+				$check( $label, 'error', $info->get_error_message() );
+			} elseif ( ! empty( $info['trashed'] ) || 'application/vnd.google-apps.folder' !== ( $info['mimeType'] ?? '' ) ) {
+				$check( $label, 'error', __( 'The ID does not point to an existing Drive folder.', 'personalized-city-tour' ) );
+			} else {
+				$check( $label, 'ok', (string) $info['name'] );
+			}
+		}
+		$latest = self::latest();
+		$check( __( 'Last successful export', 'personalized-city-tour' ), $latest ? 'ok' : 'warn', $latest ? wp_date( 'Y-m-d H:i', max( array_column( $latest, 'time' ) ) ) : __( 'No export has run yet.', 'personalized-city-tour' ) );
+		return $checks;
+	}
+
+	public static function mask_email( $email ) {
+		$parts = explode( '@', $email, 2 );
+		if ( 2 !== count( $parts ) ) {
+			return '***';
+		}
+		return substr( $parts[0], 0, 2 ) . '***@' . $parts[1];
+	}
+
+	/**
+	 * Delete exports older than the retention period (Drive files created by the
+	 * plugin, or local sandbox files).
+	 */
+	public static function apply_retention() {
+		$days = (int) PCT_Settings::get( 'drive_retention_days', 90 );
+		if ( $days <= 0 ) {
+			return;
+		}
+		$cutoff = time() - $days * DAY_IN_SECONDS;
+		$dir    = self::local_dir();
+		$keep   = array_filter( array_column( self::latest(), 'path' ) );
+		if ( is_dir( $dir ) ) {
+			foreach ( glob( $dir . '/pct-*.json' ) ?: array() as $file ) {
+				if ( filemtime( $file ) < $cutoff && ! in_array( $file, $keep, true ) ) {
+					wp_delete_file( $file );
+				}
+			}
+		}
+		if ( self::sandbox() || ! self::connected() ) {
+			return;
+		}
+		$q   = "name contains 'pct-' and createdTime < '" . gmdate( 'c', $cutoff ) . "' and trashed = false";
+		$data = self::api( 'GET', add_query_arg( array( 'q' => $q, 'fields' => 'files(id,name)', 'pageSize' => 100 ), self::API_URL . '/files' ), array( 'timeout' => 20 ) );
+		if ( is_wp_error( $data ) ) {
+			return;
+		}
+		$keep_ids = array_filter( array_column( self::latest(), 'drive_id' ) );
+		foreach ( (array) ( $data['files'] ?? array() ) as $file ) {
+			if ( in_array( $file['id'], $keep_ids, true ) ) {
+				continue;
+			}
+			self::api( 'DELETE', self::API_URL . '/files/' . rawurlencode( $file['id'] ), array( 'timeout' => 20 ) );
+		}
+	}
+}

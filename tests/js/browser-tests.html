@@ -1,0 +1,367 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Personalized City Tour — frontend browser tests</title>
+<link rel="stylesheet" href="../../personalized-city-tour/public/vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="../../personalized-city-tour/public/css/public.css">
+<style>
+body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #fafafa; }
+#results { font: 12px/1.5 monospace; white-space: pre-wrap; background: #fff; border: 1px solid #ddd; padding: 8px; margin-bottom: 16px; }
+#results .fail { color: #b42318; font-weight: 600; }
+#results .ok { color: #067647; }
+.pct-app { max-width: 960px; }
+</style>
+</head>
+<body>
+<div id="results">running…</div>
+<div class="pct-app" data-view="both"></div>
+<script src="fixtures.js"></script>
+<script>
+/*
+ * Self-running frontend tests against the REST fixtures exported by tests/php/export-fixtures.php.
+ * Open this file in a browser (file://) or run `node tests/js/run-browser.js` against a Chrome
+ * instance with remote debugging enabled. Results are written to #results and window.PCT_TEST_RESULT.
+ */
+(function () {
+	'use strict';
+	var F = window.PCT_FIXTURES;
+	var log = [];
+	var fails = 0;
+	var out = document.getElementById('results');
+	function report(ok, msg) {
+		if (!ok) { fails++; }
+		log.push((ok ? 'ok: ' : 'FAIL: ') + msg);
+		var line = document.createElement('div');
+		line.className = ok ? 'ok' : 'fail';
+		line.textContent = (ok ? 'ok: ' : 'FAIL: ') + msg;
+		out.appendChild(line);
+	}
+	function assert(cond, msg) { report(!!cond, msg); return !!cond; }
+	function finish(err) {
+		if (err) { report(false, 'uncaught: ' + (err && err.stack || err)); }
+		var head = document.createElement('div');
+		head.textContent = 'FAILS: ' + fails + ' / ' + log.length + ' checks';
+		head.className = fails ? 'fail' : 'ok';
+		out.insertBefore(head, out.firstChild);
+		window.PCT_TEST_RESULT = { fails: fails, total: log.length, log: log };
+	}
+	window.onerror = function (m, s, l, c, e) { report(false, 'window.onerror: ' + (e && e.stack ? e.stack.split('\n').slice(0, 12).join(' | ') : m + ' @' + l + ':' + c)); };
+	window.addEventListener('unhandledrejection', function (e) { report(false, 'unhandled rejection: ' + (e.reason && e.reason.stack || e.reason)); });
+
+	/* ---------------- environment mocks ---------------- */
+	try { localStorage.clear(); } catch (e) {}
+	var calls = window.__pctCalls = [];
+	var guideState = { registered: false, status: '' };
+	function respond(status, body, delay) {
+		var res = { ok: status < 400, status: status, text: function () { return Promise.resolve(JSON.stringify(body)); } };
+		return new Promise(function (r) { setTimeout(function () { r(res); }, delay || 0); });
+	}
+	window.fetch = function (url, opts) {
+		var method = (opts && opts.method) || 'GET';
+		var body = opts && opts.body ? JSON.parse(opts.body) : null;
+		calls.push({ method: method, url: url, body: body, headers: (opts && opts.headers) || {} });
+		var u = new URL(url);
+		var path = u.pathname.replace(/^.*\/pct\/v1/, '');
+		if (path === '/i18n') {
+			var code = u.searchParams.get('lang') || 'en';
+			return F.i18n[code] ? respond(200, F.i18n[code]) : respond(404, { code: 'pct_lang', message: 'unknown language ' + code });
+		}
+		if (path === '/cities') { return respond(200, F.cities); }
+		if (path === '/form') { return respond(200, F.form); }
+		/* Generation takes time in production; the delay lets the progress state be observed. */
+		if (path === '/tours' && method === 'POST') { return respond(200, F.tour, 250); }
+		if (/^\/tours\/\d+/.test(path)) { return respond(200, F.tour); }
+		if (path === '/route') {
+			var a = body.points[0], b = body.points[body.points.length - 1];
+			var coords = [];
+			/* Zig-zag so Leaflet's polyline simplification keeps the intermediate vertices. */
+			for (var i = 0; i <= 10; i++) { coords.push([a[0] + (b[0] - a[0]) * i / 10 + (i % 2 && i < 10 ? 0.0003 : 0), a[1] + (b[1] - a[1]) * i / 10]); }
+			return respond(200, { coordinates: coords, distance: 1234, duration: 900, mode: body.mode });
+		}
+		if (path === '/guide/status') {
+			var known = guideState.registered && (opts && opts.headers && opts.headers['X-PCT-GUIDE']) === 'guide-token-123';
+			return respond(200, {
+				logged_in: false, is_guide: known, registered: known, verified: false,
+				status: known ? guideState.status : '', can_apply: true, require_mobile: true, display_name: known ? 'Guide Gal' : '',
+				logout_url: '', cities: { '1': 'Testville' }, categories: { food: 'Food' }, can_publish: false, auto_publish: false
+			});
+		}
+		if (path === '/guide/apply' && method === 'POST') {
+			if (!String(body.mobile || '').trim()) { return respond(400, { code: 'pct_mobile', message: 'Mobile number is required.' }); }
+			guideState = { registered: true, status: 'pending' };
+			return respond(200, { status: 'pending', token: 'guide-token-123' });
+		}
+		if (path === '/guide/events') { return respond(200, []); }
+		return respond(404, { code: 'not_found', message: 'no mock for ' + method + ' ' + path });
+	};
+
+	var geo = { cb: null, err: null, watching: 0 };
+	navigator.geolocation.watchPosition = function (cb, err) { geo.cb = cb; geo.err = err; geo.watching++; return geo.watching; };
+	navigator.geolocation.clearWatch = function () { geo.cb = null; };
+	geo.emit = function (lat, lng) { if (geo.cb) { geo.cb({ coords: { latitude: lat, longitude: lng, accuracy: 12 } }); } };
+
+	window.pctConfig = JSON.parse(JSON.stringify(F.config));
+	window.pctConfig.maps.routing = 'osrm';
+
+	/* ---------------- helpers ---------------- */
+	var root = document.querySelector('.pct-app');
+	function wait(ms) { return new Promise(function (r) { setTimeout(r, ms || 30); }); }
+	function until(fn, label, timeout) {
+		var start = Date.now();
+		return new Promise(function (resolve, reject) {
+			(function poll() {
+				var v; try { v = fn(); } catch (e) { v = null; }
+				if (v) { return resolve(v); }
+				if (Date.now() - start > (timeout || 4000)) { return reject(new Error('timeout waiting for ' + label)); }
+				setTimeout(poll, 20);
+			})();
+		});
+	}
+	function $(sel) { return root.querySelector(sel); }
+	function $$(sel) { return Array.prototype.slice.call(root.querySelectorAll(sel)); }
+	function byText(sel, text) { return $$(sel).filter(function (n) { return n.textContent.trim() === text; })[0]; }
+	function click(node) { node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); }
+	function type(input, value) { input.value = value; input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true })); }
+	function strings(code) { return F.i18n[code].strings; }
+	function fieldWrap(id) { return $('[data-field="' + id + '"]') || (function () { var c = $('#pct-f-' + id) || $('[name="' + id + '"]'); return c && c.closest('.pct-field'); })(); }
+
+	/* ---------------- scenario ---------------- */
+	window.__pctStart = function () {
+		var fa = strings('fa'), en = strings('en');
+		return until(function () { return $('.pct-lang-card'); }, 'language screen').then(function () {
+			/* 1. language selection comes first */
+			var cards = $$('.pct-lang-card');
+			assert(cards.length === F.config.lang.languages.length, 'language screen lists all ' + cards.length + ' languages before role choice');
+			assert(!$('.pct-entry-card'), 'role cards are hidden until a language is chosen');
+			click(cards.filter(function (c) { return c.getAttribute('lang') === 'fa'; })[0]);
+			return until(function () { return $('.pct-entry-card'); }, 'entry after fa');
+		}).then(function () {
+			assert(root.getAttribute('dir') === 'rtl' && root.classList.contains('is-rtl'), 'Persian switches the app to RTL');
+			assert(byText('.pct-entry-card strong', fa.traveler), 'entry card uses Persian string "' + fa.traveler + '"');
+			assert(localStorage.getItem('pct_lang') === 'fa' && localStorage.getItem('pct_lang_chosen') === '1', 'language persisted on the device');
+			var i18nCalls = calls.filter(function (c) { return /\/i18n/.test(c.url); });
+			assert(i18nCalls.length === 1 && i18nCalls[0].headers['X-PCT-LANG'], 'one /i18n request with X-PCT-LANG header');
+			/* 2. switching language from the bar re-renders immediately */
+			var sel = $('.pct-lang-select');
+			assert(sel && sel.value === 'fa', 'language bar shows current language');
+			type(sel, 'en');
+			return until(function () { return byText('.pct-entry-card strong', en.traveler); }, 'entry in English');
+		}).then(function () {
+			assert(root.getAttribute('dir') === 'ltr', 'English switches back to LTR');
+			assert($$('.pct-entry-card').length === 3, 'traveler, guide and Vibe entry cards present');
+			/* 3. traveler: pick city */
+			click(byText('.pct-entry-card strong', en.traveler).parentNode);
+			return until(function () { return $('.pct-city'); }, 'city list');
+		}).then(function () {
+			assert(byText('.pct-city strong', 'Testville'), 'fixture city listed');
+			click($('.pct-city'));
+			return until(function () { return $('.pct-form'); }, 'form');
+		}).then(function () {
+			/* 4. steppers: exactly one step per click, typing works */
+			var nightsWrap = $$('.pct-field').filter(function (w) { return w.querySelector('input[type="number"]') && /night/i.test(w.textContent); })[0];
+			assert(nightsWrap, 'nights field rendered as number');
+			var nights = nightsWrap.querySelector('input[type="number"]');
+			var steps = nightsWrap.querySelectorAll('.pct-step');
+			assert(steps.length === 2, 'nights field has − and + steppers');
+			type(nights, '3');
+			click(steps[1]);
+			assert(nights.value === '4', 'one click on + increments exactly once (3 → ' + nights.value + ')');
+			click(steps[1]);
+			assert(nights.value === '5', 'second click increments once more (' + nights.value + ')');
+			click(steps[0]);
+			assert(nights.value === '4', 'one click on − decrements exactly once (' + nights.value + ')');
+			type(nights, '2');
+			assert(nights.value === '2', 'manual typing is accepted immediately');
+			/* conditional: family -> children fields */
+			assert($('[data-field="children_count"]').classList.contains('pct-hidden'), 'children fields hidden before group type is chosen');
+			var family = $$('input[type="radio"]').filter(function (r) { return r.value === 'family'; })[0];
+			assert(family, 'group type radio has "family"');
+			click(family);
+			return until(function () { return !$('[data-field="children_count"]').classList.contains('pct-hidden'); }, 'children fields').then(function () {
+				assert(true, 'choosing "family" reveals children fields');
+				assert($('[data-field="date_start"]').classList.contains('pct-hidden'), 'date fields hidden while dates are flexible');
+				var custom = $$('input[type="radio"]').filter(function (r) { return r.value === 'custom'; })[0];
+				click(custom);
+				return until(function () { return !$('[data-field="date_start"]').classList.contains('pct-hidden') && $('[data-field="date_start"] .pct-dp-wrap, [data-field="date_start"] input'); }, 'date inputs');
+			});
+		}).then(function () {
+			assert(true, 'choosing custom dates reveals date fields');
+			var dateInput = $('#pct-f-date_start');
+			type(dateInput, '2026-10-05');
+			dateInput.dispatchEvent(new Event('blur'));
+			assert(/2026-10-05|1405\/07\/13/.test(dateInput.value), 'typed date accepted by the date picker (' + dateInput.value + ')');
+			/* 5. fill required answers, walk sections, submit */
+			function setRadio(value) { var r = $$('input[type="radio"]').filter(function (x) { return x.value === value; })[0]; if (r) { click(r); } return !!r; }
+			function setCheck(value) { var c = $$('input[type="checkbox"]').filter(function (x) { return x.value === value; })[0]; if (c && !c.checked) { click(c); } return !!c; }
+			type($('#pct-f-name'), 'Jane Doe');
+			var emailWrap = $('[data-field="email"]');
+			assert(emailWrap && !emailWrap.querySelector('.pct-req') && /optional/i.test(emailWrap.textContent), 'email is optional');
+			setRadio('flexible');
+			setCheck('kids');
+			type($('#pct-f-age_group'), '26-35');
+			function next() {
+				var btn = $('.pct-nav button[type="submit"]');
+				click(btn);
+				return wait(40);
+			}
+			return next().then(function () {
+				assert(!$('.pct-notice.is-error'), 'section 1 passes validation with optional email left blank');
+				setCheck('relaxed'); setRadio('moderate');
+				return next();
+			}).then(function () {
+				var avail = $$('.pct-priority .pct-choice');
+				assert(avail.length > 3, 'interests offered as prioritisable choices');
+				click(avail[0]);
+				click($$('.pct-priority .pct-choice')[0]);
+				assert($$('.pct-priority-item').length === 2 && $$('.pct-priority-item .pct-rank')[1].textContent === '2', 'picked interests are ranked 1, 2');
+				return next();
+			}).then(function () {
+				setCheck('walking'); setRadio('moderate');
+				return next();
+			}).then(function () {
+				setRadio('low');
+				return next();
+			}).then(function () {
+				return until(function () { return $('.pct-progress-steps') || $('.pct-result'); }, 'progress or result', 6000);
+			}).then(function () {
+				var prog = $('.pct-progress-steps');
+				assert(prog && prog.querySelectorAll('li').length === F.config.i18n.progressSteps.length, 'progress state shown while the tour is generated');
+				return until(function () { return $('.pct-result'); }, 'tour result', 6000);
+			});
+		}).then(function () {
+			/* 6. tour output */
+			var post = calls.filter(function (c) { return c.method === 'POST' && /\/tours$/.test(c.url); })[0];
+			assert(post && post.body.city_id === 1 && post.body.form.name === 'Jane Doe' && post.body.form.group_type === 'family', 'POST /tours carries city and answers');
+			assert($('.pct-result-head h2').textContent === F.tour.result.title, 'title "' + F.tour.result.title + '"');
+			var dayBtns = $$('.pct-days nav button');
+			assert(dayBtns.length === F.tour.result.days.length, dayBtns.length + ' day entries in hamburger menu');
+			assert($('.pct-hamburger') && $('.pct-days').classList.contains('is-open') === false, 'day menu closed by default behind hamburger');
+			click($('.pct-hamburger'));
+			assert($('.pct-days').classList.contains('is-open'), 'hamburger opens day menu');
+			click(dayBtns[1]);
+			assert(!$('.pct-days').classList.contains('is-open') && $('.pct-message h3').textContent === F.tour.result.days[1].title, 'selecting Day 2 closes menu and renders it');
+			click($('.pct-hamburger')); click($$('.pct-days nav button')[0]);
+			var stops = $$('.pct-stops .pct-stop:not(.is-alt)');
+			assert(stops.length === 3, '3 suggested stops for Day 1');
+			var gm = $$('.pct-stop a').filter(function (a) { return /google\.com\/maps/.test(a.href); });
+			assert(gm.length >= 3, 'each stop has an "Open in Google Maps" link (' + gm.length + ')');
+			assert($$('.pct-hints a.is-channel').length === 1 && $('.pct-hints a.is-channel').href === 'https://t.me/testville', 'quick hints include City Channels link');
+			var hint = $$('.pct-hints a:not(.is-channel)')[0];
+			assert(hint && hint.href.indexOf(F.tour.result.city.search_url) === 0, 'quick hints open the configured search page');
+			assert(!$('.pct-mymaps'), 'curated Google My Maps not shown publicly');
+			assert($('.pct-tag'), 'stop tags rendered');
+			/* 7. map: green planned route */
+			return until(function () { return $('.pct-map .leaflet-overlay-pane path'); }, 'leaflet route');
+		}).then(function () {
+			var paths = $$('.pct-map .leaflet-overlay-pane path');
+			var green = paths.filter(function (p) { return p.getAttribute('stroke') === '#067647'; });
+			assert(green.length === 1, 'planned tour route drawn in green');
+			assert($$('.pct-stop-marker').length >= 3 && $('.pct-stop-marker.is-start'), 'numbered stop markers with highlighted start marker');
+			assert(!paths.some(function (p) { return p.getAttribute('stroke') === '#1f5fbf'; }), 'no blue route in preview mode');
+			var legend = $$('.pct-legend-item');
+			assert(legend.length === 2, 'legend explains planned (green) vs your (blue) route');
+			/* 8. navigation: blue route to the start, trimmed as visitor moves, hidden on arrival */
+			click(byText('.pct-map-bar button', strings('en').navigate));
+			assert(geo.watching === 1 && !$('.pct-nav-panel').classList.contains('pct-hidden'), 'navigate mode starts watching location and shows the panel');
+			geo.emit(48.84, 2.34);
+			return until(function () { return $$('.pct-map .leaflet-overlay-pane path').filter(function (p) { return p.getAttribute('stroke') === '#1f5fbf' && p.getAttribute('d').split('L').length > 3; }).length; }, 'routed blue line');
+		}).then(function () {
+			var blue = function () { return $$('.pct-map .leaflet-overlay-pane path').filter(function (p) { return p.getAttribute('stroke') === '#1f5fbf' && p.getAttribute('stroke-width') === '5'; })[0]; };
+			var segsBefore = blue().getAttribute('d').split('L').length;
+			assert(segsBefore > 3, 'blue visitor route uses routed geometry (' + segsBefore + ' vertices)');
+			assert(/1\. Place 0/.test($('.pct-nav-panel').textContent), 'panel targets the first stop as the next stop');
+			geo.emit(48.845, 2.345);
+			return wait(50).then(function () {
+				var segsAfter = blue().getAttribute('d').split('L').length;
+				assert(segsAfter < segsBefore, 'blue route trimmed behind the visitor (' + segsBefore + ' → ' + segsAfter + ' vertices)');
+				var routeCalls = calls.filter(function (c) { return /\/route$/.test(c.url); }).length;
+				geo.emit(48.848, 2.348);
+				return wait(50).then(function () {
+					assert(calls.filter(function (c) { return /\/route$/.test(c.url); }).length === routeCalls, 'staying on the route does not re-request it');
+					geo.emit(48.85, 2.35); /* at the start */
+					return wait(50);
+				});
+			});
+		}).then(function () {
+			assert(!blueLine(), 'reaching the start hides the blue route');
+			assert($('.pct-stop-marker.is-visited'), 'start stop marked as visited');
+			assert(/Night Market/.test($('.pct-nav-panel').textContent), 'panel advances to stop 2');
+			assert($('.pct-nav-panel') && byText('.pct-nav-panel button', strings('en').goToStart), '"Go to the tour start" button offered after leaving the start');
+			geo.emit(48.855, 2.355);
+			return wait(50);
+		}).then(function () {
+			assert(!blueLine(), 'between planned stops only the green route is shown');
+			/* 9. device-scoped saved places */
+			var parkingRow = $$('.pct-place').filter(function (r) { return /Parking/.test(r.textContent); })[0];
+			assert(parkingRow, 'saved-places box lists Parking');
+			click(byText('.pct-place button', strings('en').saveHere));
+			var saved = JSON.parse(localStorage.getItem('pct_places_1') || '{}');
+			assert(saved.parking && Math.abs(saved.parking.lat - 48.855) < 1e-9, 'Save my parking stores current position on this device only');
+			assert(!calls.some(function (c) { return /places|parking/.test(c.url); }), 'saved places never sent to the server');
+			var parking = $$('.pct-place').filter(function (r) { return /Parking/.test(r.textContent); })[0];
+			geo.emit(48.87, 2.37); /* walk away from the car first */
+			click(parking.querySelector('.is-primary'));
+			return until(function () { return blueLine(); }, 'blue line to parking');
+		}).then(function () {
+			assert(/Parking/.test($('.pct-nav-panel').textContent), 'Go to → navigation targets the saved parking');
+			geo.emit(48.855, 2.355);
+			return wait(50);
+		}).then(function () {
+			assert(!blueLine() && /Night Market/.test($('.pct-nav-panel').textContent), 'arriving at parking clears the blue route and returns to the tour');
+			click(byText('.pct-place button', strings('en').remove));
+			assert(!JSON.parse(localStorage.getItem('pct_places_1')).parking, 'Remove forgets the saved place');
+			/* 10. share link + start over */
+			assert(byText('.pct-days-foot button', strings('en').copyLink), 'copy-link button present for the permalink');
+			click(byText('.pct-days-foot button', strings('en').startOver));
+			return until(function () { return $('.pct-city'); }, 'back to cities');
+		}).then(function () {
+			assert(true, '"Plan another tour" returns to city selection');
+			/* 11. guide flow without login */
+			click(byText('.pct-head button', '‹ ' + strings('en').back));
+			return until(function () { return $('.pct-entry-card'); }, 'entry');
+		}).then(function () {
+			click(byText('.pct-entry-card strong', strings('en').guide).parentNode);
+			return until(function () { return $('#pct-g-mobile'); }, 'guide form');
+		}).then(function () {
+			assert($('#pct-g-mobile').required && $('#pct-g-name') && !$('a[href*="login"]'), 'guide registration asks for a mobile number and needs no login');
+			type($('#pct-g-name'), 'Guide Gal');
+			click($('.pct-guide-grid button[type="submit"]'));
+			return wait(60);
+		}).then(function () {
+			assert(!$('.pct-guide-grid').checkValidity() && !calls.some(function (c) { return /guide\/apply/.test(c.url); }), 'missing mobile blocks submission client-side');
+			type($('#pct-g-mobile'), '   ');
+			$('.pct-guide-grid').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+			return until(function () { return $('.pct-notice.is-error'); }, 'mobile error');
+		}).then(function () {
+			assert(/Mobile/.test($('.pct-notice.is-error').textContent), 'blank mobile rejected by server → error shown');
+			type($('#pct-g-mobile'), '+989121234567');
+			click($('.pct-guide-grid button[type="submit"]'));
+			return until(function () { return $('.pct-badge'); }, 'guide status badge');
+		}).then(function () {
+			var apply = calls.filter(function (c) { return /guide\/apply/.test(c.url); }).pop();
+			assert(apply.body.mobile === '+989121234567' && apply.body.name === 'Guide Gal', 'apply payload has name + mobile');
+			assert(localStorage.getItem('pct_guide_token') === 'guide-token-123', 'guide device token stored');
+			var after = calls.filter(function (c) { return /guide\/status/.test(c.url); }).pop();
+			assert(after.headers['X-PCT-GUIDE'] === 'guide-token-123', 'later requests carry X-PCT-GUIDE');
+			assert($('.pct-badge').classList.contains('is-pending'), 'guide shown as pending until admin verifies by phone');
+			click(byText('.pct-head button', strings('en').guideForget) || byText('button', strings('en').guideForget));
+			return until(function () { return $('#pct-g-mobile'); }, 'guide form after forget');
+		}).then(function () {
+			assert(localStorage.getItem('pct_guide_token') === null, '"Forget this device" clears the token');
+			finish();
+		}).catch(finish);
+
+		function blueLine() {
+			return $$('.pct-map .leaflet-overlay-pane path').filter(function (p) { return p.getAttribute('stroke') === '#1f5fbf' && p.getAttribute('stroke-width') === '5'; })[0];
+		}
+	};
+})();
+</script>
+<script src="../../personalized-city-tour/public/vendor/leaflet/leaflet.js"></script>
+<script src="../../personalized-city-tour/public/js/pct-datepicker.js"></script>
+<script src="../../personalized-city-tour/public/js/public.js"></script>
+<script>window.__pctStart();</script>
+</body>
+</html>
