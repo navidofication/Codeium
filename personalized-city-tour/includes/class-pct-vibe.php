@@ -426,15 +426,15 @@ class PCT_Vibe {
 		if ( 'mock' === $provider || $s['sandbox'] ) {
 			return array( 'data' => self::mock_image( $r ), 'ext' => 'svg', 'provider' => 'sandbox' );
 		}
-		$key = PCT_Settings::secret( 'image_api_key' );
-		if ( '' === $key ) {
-			$key = PCT_Settings::ai_key();
-		}
-		$endpoint = 'openai' === $provider ? 'https://api.openai.com/v1/images/generations' : (string) PCT_Settings::get( 'image_endpoint' );
+		$key      = self::image_key();
+		$endpoint = self::image_endpoint();
 		if ( '' === $endpoint ) {
 			return new WP_Error( 'pct_image_config', __( 'Image endpoint is not configured.', 'personalized-city-tour' ) );
 		}
-		$res = wp_remote_post(
+		if ( '' === $key ) {
+			return new WP_Error( 'pct_image_config', __( 'Image API key is not configured.', 'personalized-city-tour' ) );
+		}
+		$res = PCT_AI::post_with_retry(
 			$endpoint,
 			array(
 				'timeout' => 180,
@@ -464,6 +464,85 @@ class PCT_Vibe {
 			return array( 'data' => wp_remote_retrieve_body( $img ), 'ext' => 'png', 'provider' => $provider );
 		}
 		return new WP_Error( 'pct_image_empty', __( 'The image provider returned no image.', 'personalized-city-tour' ) );
+	}
+
+	/** Dedicated image key, falling back to the AI provider key. */
+	public static function image_key() {
+		$key = PCT_Settings::secret( 'image_api_key' );
+		return '' === $key ? PCT_Settings::ai_key() : $key;
+	}
+
+	public static function image_endpoint() {
+		$provider = (string) PCT_Settings::get( 'image_provider', 'mock' );
+		return 'openai' === $provider ? 'https://api.openai.com/v1/images/generations' : (string) PCT_Settings::get( 'image_endpoint' );
+	}
+
+	/**
+	 * Image generator diagnostics. Checks configuration and, for live
+	 * providers, authenticates against the provider's model listing endpoint
+	 * (no image is generated, so the check is free). Never returns keys.
+	 *
+	 * @return array List of { label, status: ok|warn|error|skip, detail }.
+	 */
+	public static function diagnose() {
+		$checks = array();
+		$check  = function ( $label, $status, $detail = '' ) use ( &$checks ) {
+			$checks[] = array( 'label' => $label, 'status' => $status, 'detail' => (string) $detail );
+		};
+		$provider = (string) PCT_Settings::get( 'image_provider', 'mock' );
+		$s        = self::settings();
+		$labels   = array(
+			'mock'   => __( 'Sandbox (SVG mock)', 'personalized-city-tour' ),
+			'openai' => __( 'OpenAI Images', 'personalized-city-tour' ),
+			'custom' => __( 'Custom OpenAI-compatible endpoint', 'personalized-city-tour' ),
+		);
+		$check( __( 'Provider', 'personalized-city-tour' ), 'mock' === $provider ? 'warn' : 'ok', isset( $labels[ $provider ] ) ? $labels[ $provider ] : $provider );
+		$check( __( 'Model', 'personalized-city-tour' ), PCT_Settings::get( 'image_model' ) ? 'ok' : 'warn', (string) PCT_Settings::get( 'image_model' ) );
+		$check( __( 'Image size', 'personalized-city-tour' ), 'ok', (string) $s['image_size'] );
+
+		$dir = wp_upload_dir();
+		$ok  = ! empty( $dir['basedir'] ) && wp_mkdir_p( $dir['basedir'] ) && is_writable( $dir['basedir'] );
+		$check( __( 'Uploads folder writable', 'personalized-city-tour' ), $ok ? 'ok' : 'error', (string) $dir['basedir'] );
+
+		if ( 'mock' === $provider || $s['sandbox'] ) {
+			$check( __( 'Live request', 'personalized-city-tour' ), 'skip', $s['sandbox'] && 'mock' !== $provider ? __( 'Vibe sandbox mode is on; the provider is not called.', 'personalized-city-tour' ) : __( 'Mock provider; no external calls.', 'personalized-city-tour' ) );
+			return $checks;
+		}
+		$endpoint = self::image_endpoint();
+		$check( __( 'Endpoint URL', 'personalized-city-tour' ), $endpoint ? 'ok' : 'error', $endpoint ? $endpoint : __( 'Enter the image generation endpoint.', 'personalized-city-tour' ) );
+		$key_src = PCT_Settings::has_secret( 'image_api_key' ) ? __( 'dedicated image key', 'personalized-city-tour' ) : ( '' !== PCT_Settings::ai_key() ? __( 'falls back to the AI provider key', 'personalized-city-tour' ) : '' );
+		$check( __( 'API key', 'personalized-city-tour' ), $key_src ? 'ok' : 'error', $key_src ? $key_src : __( 'Missing — save an image API key or an AI provider key.', 'personalized-city-tour' ) );
+		if ( ! $endpoint || ! $key_src ) {
+			return $checks;
+		}
+
+		// Authenticate against /models (or the endpoint root) instead of generating an image.
+		$models_url = preg_replace( '#/images/generations/?$#', '/models', untrailingslashit( $endpoint ) );
+		if ( $models_url === untrailingslashit( $endpoint ) ) {
+			$models_url = untrailingslashit( $endpoint ) . '/models';
+		}
+		$started = microtime( true );
+		$res     = wp_remote_get( $models_url, array( 'timeout' => 20, 'headers' => array( 'Authorization' => 'Bearer ' . self::image_key() ) ) );
+		$ms      = (int) round( ( microtime( true ) - $started ) * 1000 );
+		if ( is_wp_error( $res ) ) {
+			$check( __( 'Live request', 'personalized-city-tour' ), 'error', $res->get_error_message() );
+			return $checks;
+		}
+		$code = (int) wp_remote_retrieve_response_code( $res );
+		$body = json_decode( wp_remote_retrieve_body( $res ), true );
+		if ( 401 === $code || 403 === $code ) {
+			$check( __( 'Live request', 'personalized-city-tour' ), 'error', sprintf( /* translators: %d: HTTP status */ __( 'HTTP %d — the API key was rejected.', 'personalized-city-tour' ), $code ) );
+		} elseif ( $code >= 200 && $code < 300 ) {
+			$ids   = array_column( (array) ( $body['data'] ?? array() ), 'id' );
+			$model = (string) PCT_Settings::get( 'image_model' );
+			$found = ! $ids || in_array( $model, $ids, true );
+			$check( __( 'Live request', 'personalized-city-tour' ), $found ? 'ok' : 'warn', sprintf( /* translators: %d: milliseconds */ __( 'Authenticated in %d ms.', 'personalized-city-tour' ), $ms ) . ( $found ? '' : ' ' . sprintf( /* translators: %s: model */ __( 'Model "%s" is not in the provider model list.', 'personalized-city-tour' ), $model ) ) );
+		} elseif ( 404 === $code || 405 === $code ) {
+			$check( __( 'Live request', 'personalized-city-tour' ), 'warn', __( 'Endpoint reachable, but it has no /models listing; run a real generation to fully verify.', 'personalized-city-tour' ) );
+		} else {
+			$check( __( 'Live request', 'personalized-city-tour' ), 'error', sprintf( /* translators: %d: HTTP status */ __( 'HTTP %d', 'personalized-city-tour' ), $code ) . ( isset( $body['error']['message'] ) ? ' — ' . $body['error']['message'] : '' ) );
+		}
+		return $checks;
 	}
 
 	/**

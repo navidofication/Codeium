@@ -97,20 +97,49 @@ class PCT_Meta_Boxes {
 		self::field( '_pct_lng', __( 'Centre longitude', 'personalized-city-tour' ), self::text( '_pct_lng', $m( '_pct_lng' ), 'text', 'data-pct="lng"' ) );
 		self::field( '_pct_zoom', __( 'Default zoom', 'personalized-city-tour' ), self::text( '_pct_zoom', $m( '_pct_zoom', 13 ), 'number', 'min="3" max="19"' ) );
 		self::field( 'pct_map', __( 'Map position', 'personalized-city-tour' ), self::map_picker( $m( '_pct_lat' ), $m( '_pct_lng' ) ) );
+		self::field( '_pct_gmaps_url', __( 'Google Maps location link', 'personalized-city-tour' ), self::text( '_pct_gmaps_url', $m( '_pct_gmaps_url' ), 'url', 'class="large-text" dir="ltr"' ), __( 'Public Google Maps link of the city (https://maps.app.goo.gl/… or https://www.google.com/maps/place/…). Used as fallback for "Open in Google Maps".', 'personalized-city-tour' ) );
 		echo '</table>';
+
+		echo '<h3>' . esc_html__( 'City Channels', 'personalized-city-tour' ) . '</h3>';
+		echo '<p class="description">' . esc_html__( 'Public channels of the city (Telegram, Instagram, official tourism site, event calendars…). They are shown to travellers under the quick search hints and included in the AI input when city-database consent is enabled.', 'personalized-city-tour' ) . '</p>';
+		self::links_repeater( 'pct-channels', '_pct_channels', (array) get_post_meta( $post->ID, '_pct_channels', true ), __( 'Channel URL', 'personalized-city-tour' ), __( 'Add another channel', 'personalized-city-tour' ) );
 
 		echo '<h3>' . esc_html__( 'Google My Maps', 'personalized-city-tour' ) . '</h3>';
 		echo '<p class="description">' . esc_html__( 'Paste share links of customised Google My Maps for this city (https://www.google.com/maps/d/…?mid=…). They are offered to travellers next to their route.', 'personalized-city-tour' ) . '</p>';
-		$rows = (array) get_post_meta( $post->ID, '_pct_mymaps', true );
+		self::links_repeater( 'pct-mymaps', '_pct_mymaps', (array) get_post_meta( $post->ID, '_pct_mymaps', true ), __( 'My Maps URL', 'personalized-city-tour' ), __( 'Add another map', 'personalized-city-tour' ) );
+	}
+
+	/**
+	 * Label + URL repeater table (channels, My Maps, social links).
+	 */
+	private static function links_repeater( $id, $key, array $rows, $url_label, $add_label ) {
 		$rows = array_values( array_filter( $rows, function ( $r ) { return ! empty( $r['url'] ); } ) );
 		$rows[] = array( 'label' => '', 'url' => '' );
-		echo '<table class="widefat pct-repeater" id="pct-mymaps"><thead><tr><th>' . esc_html__( 'Label', 'personalized-city-tour' ) . '</th><th>' . esc_html__( 'My Maps URL', 'personalized-city-tour' ) . '</th><th></th></tr></thead><tbody>';
+		echo '<table class="widefat pct-repeater" id="' . esc_attr( $id ) . '"><thead><tr><th>' . esc_html__( 'Label', 'personalized-city-tour' ) . '</th><th>' . esc_html( $url_label ) . '</th><th></th></tr></thead><tbody>';
 		foreach ( $rows as $i => $row ) {
-			echo '<tr><td><input type="text" name="_pct_mymaps[' . (int) $i . '][label]" value="' . esc_attr( $row['label'] ) . '" class="regular-text" /></td>'
-				. '<td><input type="url" name="_pct_mymaps[' . (int) $i . '][url]" value="' . esc_attr( $row['url'] ) . '" class="large-text" /></td>'
+			echo '<tr><td><input type="text" name="' . esc_attr( $key ) . '[' . (int) $i . '][label]" value="' . esc_attr( (string) ( $row['label'] ?? '' ) ) . '" class="regular-text" /></td>'
+				. '<td><input type="url" name="' . esc_attr( $key ) . '[' . (int) $i . '][url]" value="' . esc_attr( (string) ( $row['url'] ?? '' ) ) . '" class="large-text" dir="ltr" /></td>'
 				. '<td><button type="button" class="button-link-delete pct-repeater-remove">' . esc_html__( 'Remove', 'personalized-city-tour' ) . '</button></td></tr>';
 		}
-		echo '</tbody></table><p><button type="button" class="button pct-repeater-add" data-target="pct-mymaps">' . esc_html__( 'Add another map', 'personalized-city-tour' ) . '</button></p>';
+		echo '</tbody></table><p><button type="button" class="button pct-repeater-add" data-target="' . esc_attr( $id ) . '">' . esc_html( $add_label ) . '</button></p>';
+	}
+
+	/**
+	 * Sanitised label/URL rows from a submitted repeater.
+	 */
+	public static function sanitize_links( $rows ) {
+		$out = array();
+		foreach ( (array) $rows as $row ) {
+			$url = esc_url_raw( trim( (string) ( is_array( $row ) ? ( $row['url'] ?? '' ) : '' ) ), array( 'http', 'https' ) );
+			if ( ! $url || ! preg_match( '#^https?://#i', $url ) ) {
+				continue;
+			}
+			$out[] = array(
+				'label' => sanitize_text_field( (string) ( $row['label'] ?? '' ) ),
+				'url'   => $url,
+			);
+		}
+		return $out;
 	}
 
 	private static function render_common_location( $post, $with_city = true ) {
@@ -126,6 +155,7 @@ class PCT_Meta_Boxes {
 		self::field( '_pct_lat', __( 'Latitude', 'personalized-city-tour' ), self::text( '_pct_lat', $m( '_pct_lat' ), 'text', 'data-pct="lat"' ) );
 		self::field( '_pct_lng', __( 'Longitude', 'personalized-city-tour' ), self::text( '_pct_lng', $m( '_pct_lng' ), 'text', 'data-pct="lng"' ) );
 		self::field( 'pct_map', __( 'Map position', 'personalized-city-tour' ), self::map_picker( $m( '_pct_lat' ), $m( '_pct_lng' ), $city_id ) );
+		self::field( '_pct_gmaps_url', __( 'Google Maps location link', 'personalized-city-tour' ), self::text( '_pct_gmaps_url', $m( '_pct_gmaps_url' ), 'url', 'class="large-text" dir="ltr"' ), __( 'Share link from Google Maps for this exact location; travellers get it as "Open in Google Maps".', 'personalized-city-tour' ) );
 		self::field( '_pct_link', __( 'Official link', 'personalized-city-tour' ), self::text( '_pct_link', $m( '_pct_link' ), 'url', 'class="large-text"' ) );
 		self::field( '_pct_price_tier', __( 'Price tier', 'personalized-city-tour' ), self::select( '_pct_price_tier', $m( '_pct_price_tier' ), PCT_Data::price_tiers(), __( '— unknown —', 'personalized-city-tour' ) ) );
 		self::field( '_pct_accessibility', __( 'Accessibility', 'personalized-city-tour' ), self::checkboxes( '_pct_accessibility', (array) $m( '_pct_accessibility', array() ), PCT_Data::accessibility_options() ) );
@@ -145,6 +175,7 @@ class PCT_Meta_Boxes {
 		self::field( '_pct_indoor', __( 'Indoor / outdoor', 'personalized-city-tour' ), self::select( '_pct_indoor', $m( '_pct_indoor' ), array( 'indoor' => __( 'Indoor', 'personalized-city-tour' ), 'outdoor' => __( 'Outdoor', 'personalized-city-tour' ), 'mixed' => __( 'Mixed', 'personalized-city-tour' ) ), __( '— unknown —', 'personalized-city-tour' ) ) );
 		self::field( '_pct_family', __( 'Family friendly', 'personalized-city-tour' ), '<label><input type="checkbox" name="_pct_family" value="1" ' . checked( (bool) $m( '_pct_family' ), true, false ) . ' /> ' . esc_html__( 'Suitable for children', 'personalized-city-tour' ) . '</label>' );
 		echo '</table>';
+		self::render_socials( $post );
 	}
 
 	public static function render_event( $post ) {
@@ -164,6 +195,13 @@ class PCT_Meta_Boxes {
 		self::field( '_pct_duration', __( 'Duration (minutes)', 'personalized-city-tour' ), self::text( '_pct_duration', $m( '_pct_duration' ), 'number', 'min="0" step="5"' ) );
 		self::field( '_pct_family', __( 'Family friendly', 'personalized-city-tour' ), '<label><input type="checkbox" name="_pct_family" value="1" ' . checked( (bool) $m( '_pct_family' ), true, false ) . ' /> ' . esc_html__( 'Suitable for children', 'personalized-city-tour' ) . '</label>' );
 		echo '</table>';
+		self::render_socials( $post );
+	}
+
+	private static function render_socials( $post ) {
+		echo '<h3>' . esc_html__( 'Social media links', 'personalized-city-tour' ) . '</h3>';
+		echo '<p class="description">' . esc_html__( 'Instagram, Telegram, X, website… of this place or event.', 'personalized-city-tour' ) . '</p>';
+		self::links_repeater( 'pct-socials', '_pct_socials', (array) get_post_meta( $post->ID, '_pct_socials', true ), __( 'Profile URL', 'personalized-city-tour' ), __( 'Add another link', 'personalized-city-tour' ) );
 	}
 
 	public static function render_tour( $post ) {
@@ -202,19 +240,9 @@ class PCT_Meta_Boxes {
 		update_post_meta( $post_id, '_pct_lat', PCT_Rest::sanitize_coord( self::post_text( '_pct_lat' ), 90 ) );
 		update_post_meta( $post_id, '_pct_lng', PCT_Rest::sanitize_coord( self::post_text( '_pct_lng' ), 180 ) );
 		update_post_meta( $post_id, '_pct_zoom', max( 3, min( 19, absint( self::post_text( '_pct_zoom' ) ?: 13 ) ) ) );
-
-		$maps = array();
-		foreach ( (array) ( $_POST['_pct_mymaps'] ?? array() ) as $row ) { // phpcs:ignore WordPress.Security.NonceVerification
-			$url = esc_url_raw( trim( (string) ( $row['url'] ?? '' ) ) );
-			if ( ! $url ) {
-				continue;
-			}
-			$maps[] = array(
-				'label' => sanitize_text_field( (string) ( $row['label'] ?? '' ) ),
-				'url'   => $url,
-			);
-		}
-		update_post_meta( $post_id, '_pct_mymaps', $maps );
+		update_post_meta( $post_id, '_pct_gmaps_url', esc_url_raw( self::post_text( '_pct_gmaps_url' ) ) );
+		update_post_meta( $post_id, '_pct_channels', self::sanitize_links( wp_unslash( $_POST['_pct_channels'] ?? array() ) ) ); // phpcs:ignore WordPress.Security.NonceVerification
+		update_post_meta( $post_id, '_pct_mymaps', self::sanitize_links( wp_unslash( $_POST['_pct_mymaps'] ?? array() ) ) ); // phpcs:ignore WordPress.Security.NonceVerification
 	}
 
 	public static function save_item( $post_id, $post ) {
@@ -228,6 +256,8 @@ class PCT_Meta_Boxes {
 			'_pct_lat'           => PCT_Rest::sanitize_coord( self::post_text( '_pct_lat' ), 90 ),
 			'_pct_lng'           => PCT_Rest::sanitize_coord( self::post_text( '_pct_lng' ), 180 ),
 			'_pct_link'          => esc_url_raw( self::post_text( '_pct_link' ) ),
+			'_pct_gmaps_url'     => esc_url_raw( self::post_text( '_pct_gmaps_url' ) ),
+			'_pct_socials'       => self::sanitize_links( wp_unslash( $_POST['_pct_socials'] ?? array() ) ), // phpcs:ignore WordPress.Security.NonceVerification
 			'_pct_price_tier'    => array_key_exists( self::post_text( '_pct_price_tier' ), PCT_Data::price_tiers() ) ? self::post_text( '_pct_price_tier' ) : '',
 			'_pct_accessibility' => array_values( $acc ),
 			'_pct_duration'      => absint( self::post_text( '_pct_duration' ) ),

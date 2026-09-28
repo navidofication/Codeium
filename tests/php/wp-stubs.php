@@ -320,6 +320,8 @@ function wp_remote_post( $url, $args = array() ) { $args['method'] = 'POST'; ret
 function wp_remote_get( $url, $args = array() ) { $args['method'] = 'GET'; return wp_remote_request( $url, $args ); }
 function wp_remote_retrieve_body( $r ) { return is_wp_error( $r ) ? '' : ( $r['body'] ?? '' ); }
 function wp_remote_retrieve_response_code( $r ) { return is_wp_error( $r ) ? 0 : ( $r['response']['code'] ?? 200 ); }
+function wp_remote_retrieve_header( $r, $h ) { return is_wp_error( $r ) ? '' : ( $r['headers'][ strtolower( $h ) ] ?? '' ); }
+function size_format( $bytes, $d = 0 ) { $u = array( 'B', 'KB', 'MB', 'GB', 'TB' ); $i = 0; while ( $bytes >= 1024 && $i < 4 ) { $bytes /= 1024; $i++; } return round( $bytes, $d ) . ' ' . $u[ $i ]; }
 function wp_remote_retrieve_response_message( $r ) { return is_wp_error( $r ) ? '' : ( $r['response']['message'] ?? 'OK' ); }
 function pct_http_response( $body, $code = 200 ) { return array( 'body' => is_string( $body ) ? $body : json_encode( $body ), 'response' => array( 'code' => $code, 'message' => 'OK' ) ); }
 

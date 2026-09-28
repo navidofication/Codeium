@@ -33,6 +33,7 @@ final class PCT_Plugin {
 		PCT_Planner::init();
 		PCT_Analytics::init();
 		PCT_Drive::init();
+		PCT_Sync::init();
 		PCT_Guides::init();
 		PCT_Guide_Profiles::init();
 		PCT_SMS::init();

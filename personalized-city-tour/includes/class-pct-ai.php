@@ -362,7 +362,7 @@ class PCT_AI {
 
 		$body = apply_filters( 'pct_ai_request_body', $body, $provider );
 
-		$response = wp_remote_post(
+		$response = self::post_with_retry(
 			$url,
 			array(
 				'timeout' => (int) PCT_Settings::get( 'ai_timeout', 90 ),
@@ -377,6 +377,9 @@ class PCT_AI {
 		$data = json_decode( wp_remote_retrieve_body( $response ), true );
 		if ( $code < 200 || $code >= 300 ) {
 			$msg = isset( $data['error']['message'] ) ? $data['error']['message'] : wp_remote_retrieve_response_message( $response );
+			if ( 401 === (int) $code || 403 === (int) $code ) {
+				$msg .= ' — ' . __( 'check the API key.', 'personalized-city-tour' );
+			}
 			/* translators: 1: HTTP status, 2: provider error message */
 			return new WP_Error( 'pct_ai_http', sprintf( __( 'AI request failed (%1$s): %2$s', 'personalized-city-tour' ), $code, $msg ) );
 		}
@@ -392,6 +395,75 @@ class PCT_AI {
 			$text = $data['choices'][0]['message']['content'] ?? '';
 		}
 		return (string) $text;
+	}
+
+	/**
+	 * POST with one automatic retry on network errors, 408/429 and 5xx.
+	 * Used by every provider so a single hiccup does not fall back to the
+	 * rule-based planner.
+	 */
+	public static function post_with_retry( $url, array $args ) {
+		$response = wp_remote_post( $url, $args );
+		$code     = is_wp_error( $response ) ? 0 : (int) wp_remote_retrieve_response_code( $response );
+		if ( is_wp_error( $response ) || 408 === $code || 429 === $code || $code >= 500 ) {
+			$retry_after = is_wp_error( $response ) ? 0 : (int) wp_remote_retrieve_header( $response, 'retry-after' );
+			usleep( max( 1, min( 5, $retry_after ) ) * 1000000 );
+			$response = wp_remote_post( $url, $args );
+		}
+		return $response;
+	}
+
+	/**
+	 * Connection diagnostics for the settings page (never returns the key).
+	 *
+	 * @return array List of { label, status: ok|warn|error|skip, detail }.
+	 */
+	public static function diagnose() {
+		$checks = array();
+		$check  = function ( $label, $status, $detail = '' ) use ( &$checks ) {
+			$checks[] = array( 'label' => $label, 'status' => $status, 'detail' => (string) $detail );
+		};
+		$provider  = (string) PCT_Settings::get( 'ai_provider', 'none' );
+		$model     = (string) PCT_Settings::get( 'ai_model' );
+		$endpoint  = (string) PCT_Settings::get( 'ai_endpoint' );
+		$providers = self::providers();
+		$check( __( 'Provider', 'personalized-city-tour' ), 'none' === $provider ? 'warn' : 'ok', isset( $providers[ $provider ] ) ? $providers[ $provider ] : $provider );
+		$check( __( 'Model / deployment', 'personalized-city-tour' ), $model ? 'ok' : ( 'none' === $provider ? 'skip' : 'warn' ), $model . ( self::deployment( $provider, $model ) ? ' → ' . self::deployment( $provider, $model ) : '' ) );
+		$key_src = defined( 'PCT_AI_API_KEY' ) && PCT_AI_API_KEY ? __( 'wp-config.php constant', 'personalized-city-tour' ) : ( PCT_Settings::has_secret( 'ai_api_key' ) ? __( 'encrypted in settings', 'personalized-city-tour' ) : '' );
+		$check( __( 'API key', 'personalized-city-tour' ), '' !== PCT_Settings::ai_key() ? 'ok' : ( 'none' === $provider ? 'skip' : 'error' ), $key_src ? $key_src : __( 'Missing — save an API key or define PCT_AI_API_KEY in wp-config.php.', 'personalized-city-tour' ) );
+		if ( in_array( $provider, array( 'azure', 'custom' ), true ) ) {
+			$check( __( 'Endpoint URL', 'personalized-city-tour' ), $endpoint ? 'ok' : 'error', $endpoint ? $endpoint : __( 'Required for this provider.', 'personalized-city-tour' ) );
+		} elseif ( $endpoint ) {
+			$check( __( 'Endpoint URL', 'personalized-city-tour' ), 'ok', $endpoint );
+		}
+		$check( __( 'Sandbox mode', 'personalized-city-tour' ), self::sandbox() ? 'warn' : 'ok', self::sandbox() ? __( 'Mock responses; no provider calls are made.', 'personalized-city-tour' ) : __( 'Off', 'personalized-city-tour' ) );
+		$check(
+			__( 'City database consent', 'personalized-city-tour' ),
+			self::city_db_consent() ? 'ok' : 'warn',
+			self::city_db_consent()
+				? sprintf( /* translators: %d: number of fields */ __( '%d fields allowed', 'personalized-city-tour' ), count( (array) PCT_Settings::get( 'ai_allowed_fields', array() ) ) )
+				: __( 'The AI only receives the traveller profile; enable to send scoped city data.', 'personalized-city-tour' )
+		);
+		if ( self::city_db_consent() && ( PCT_Settings::get( 'ai_attach_drive_links' ) || PCT_Settings::get( 'ai_attach_upload_links' ) ) ) {
+			$links = PCT_Sync::ai_links();
+			$check( __( 'Export access links', 'personalized-city-tour' ), $links ? 'ok' : 'warn', $links ? implode( ', ', array_map( function ( $l ) { return $l['source'] . '/' . $l['type']; }, $links ) ) : __( 'No export is available yet — run "Refresh now" in the Google Drive tab.', 'personalized-city-tour' ) );
+		}
+		$cache = (int) PCT_Settings::get( 'ai_cache_ttl', 0 );
+		$check( __( 'Cache & batching', 'personalized-city-tour' ), 'ok', sprintf( /* translators: 1: minutes, 2: seconds */ __( 'cache %1$d min · batch window %2$d s', 'personalized-city-tour' ), $cache, (int) PCT_Settings::get( 'ai_batch_window', 0 ) ) );
+
+		if ( ! self::enabled() ) {
+			$check( __( 'Live request', 'personalized-city-tour' ), 'skip', __( 'Provider not configured; the built-in planner is used.', 'personalized-city-tour' ) );
+			return $checks;
+		}
+		$started = microtime( true );
+		$result  = self::test();
+		$ms      = (int) round( ( microtime( true ) - $started ) * 1000 );
+		if ( is_wp_error( $result ) ) {
+			$check( __( 'Live request', 'personalized-city-tour' ), 'error', $result->get_error_message() );
+		} else {
+			$check( __( 'Live request', 'personalized-city-tour' ), 'ok', self::sandbox() ? __( 'Sandbox answered.', 'personalized-city-tour' ) : sprintf( /* translators: %d: milliseconds */ __( 'Valid JSON received in %d ms.', 'personalized-city-tour' ), $ms ) );
+		}
+		return $checks;
 	}
 
 	/**

@@ -112,6 +112,10 @@ class PCT_Admin {
 					'testing' => __( 'Testing…', 'personalized-city-tour' ),
 					'ok'      => __( 'Connection OK.', 'personalized-city-tour' ),
 					'confirm' => __( 'Are you sure?', 'personalized-city-tour' ),
+					'running' => __( 'Running diagnostics…', 'personalized-city-tour' ),
+					'allOk'   => __( 'All checks passed.', 'personalized-city-tour' ),
+					'hasErr'  => __( 'Some checks failed — see details below.', 'personalized-city-tour' ),
+					'sync'    => __( 'Refreshing exports…', 'personalized-city-tour' ),
 				),
 			)
 		);

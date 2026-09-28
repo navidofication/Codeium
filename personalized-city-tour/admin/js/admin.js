@@ -142,6 +142,75 @@
 		});
 	}
 
+	/* Diagnostics (AI / Google Drive / image generator) --------------- */
+	var postJson = function (path) {
+		return fetch(cfg.rest + path, {
+			method: 'POST',
+			credentials: 'same-origin',
+			headers: { 'X-WP-Nonce': cfg.nonce, 'Content-Type': 'application/json' },
+			body: '{}'
+		}).then(function (r) {
+			return r.json().then(function (j) { return { ok: r.ok, json: j }; });
+		});
+	};
+	var renderChecks = function (box, res) {
+		var checks = (res.json && res.json.checks) || [];
+		var head = document.createElement('p');
+		head.className = 'pct-diag-summary ' + (res.ok && res.json.ok ? 'is-ok' : 'is-error');
+		head.textContent = res.ok && res.json.ok ? cfg.i18n.allOk : (res.json && res.json.message ? res.json.message : cfg.i18n.hasErr);
+		var list = document.createElement('ul');
+		checks.forEach(function (c) {
+			var li = document.createElement('li');
+			li.className = 'pct-diag-' + c.status;
+			var b = document.createElement('strong');
+			b.textContent = c.label;
+			li.appendChild(b);
+			if (c.detail) {
+				li.appendChild(document.createTextNode(' — ' + c.detail));
+			}
+			list.appendChild(li);
+		});
+		box.textContent = '';
+		box.appendChild(head);
+		if (checks.length) { box.appendChild(list); }
+		box.hidden = false;
+	};
+	Array.prototype.forEach.call(document.querySelectorAll('.pct-diagnose'), function (btn) {
+		btn.addEventListener('click', function () {
+			var box = document.getElementById(btn.getAttribute('data-result'));
+			if (!box) { return; }
+			box.hidden = false;
+			box.textContent = cfg.i18n.running;
+			btn.disabled = true;
+			postJson('/admin/diagnose/' + btn.getAttribute('data-target'))
+				.then(function (res) { renderChecks(box, res); })
+				.catch(function (err) { renderChecks(box, { ok: false, json: { message: err.message, checks: [] } }); })
+				.then(function () { btn.disabled = false; });
+		});
+	});
+
+	/* Save-triggered export refresh: run now ------------------------- */
+	var syncBtn = $('#pct-sync-run');
+	if (syncBtn) {
+		syncBtn.addEventListener('click', function () {
+			var msg = $('#pct-sync-message');
+			var state = $('#pct-sync-state');
+			msg.textContent = cfg.i18n.sync;
+			syncBtn.disabled = true;
+			postJson('/admin/sync')
+				.then(function (res) {
+					var s = (res.json && res.json.status) || {};
+					msg.textContent = res.json.message || (res.ok ? cfg.i18n.ok : 'Error');
+					if (state) {
+						state.textContent = s.state || (res.ok ? 'ok' : 'failed');
+						state.className = 'pct-status pct-status-' + (s.state === 'failed' ? 'rejected' : (s.state === 'pending' ? 'pending' : 'approved'));
+					}
+				})
+				.catch(function (err) { msg.textContent = err.message; })
+				.then(function () { syncBtn.disabled = false; });
+		});
+	}
+
 	/* Settings: provider-driven model list + custom model ------------- */
 	var provider = $('#pct_ai_provider');
 	var modelSel = $('#pct_ai_model');

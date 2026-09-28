@@ -180,6 +180,21 @@ class PCT_Rest {
 			},
 			'permission_callback' => array( __CLASS__, 'admin_permission' ),
 		) );
+		register_rest_route( self::NS, '/admin/diagnose/(?P<target>ai|drive|image)', array(
+			'methods'             => 'POST',
+			'callback'            => array( __CLASS__, 'admin_diagnose' ),
+			'permission_callback' => array( __CLASS__, 'admin_permission' ),
+		) );
+		register_rest_route( self::NS, '/admin/sync', array(
+			'methods'             => 'POST',
+			'callback'            => array( __CLASS__, 'admin_sync' ),
+			'permission_callback' => array( __CLASS__, 'admin_permission' ),
+		) );
+		register_rest_route( self::NS, '/exports/(?P<name>[A-Za-z0-9._-]+)', array(
+			'methods'             => 'GET',
+			'callback'            => array( 'PCT_Sync', 'serve' ),
+			'permission_callback' => '__return_true',
+		) );
 		register_rest_route( self::NS, '/admin/guides/(?P<id>\d+)/(?P<action>approve|revoke|remove)', array(
 			'methods'             => 'POST',
 			'callback'            => array( __CLASS__, 'admin_guide_action' ),
@@ -245,6 +260,35 @@ class PCT_Rest {
 
 	public static function admin_permission() {
 		return current_user_can( 'pct_manage' );
+	}
+
+	/**
+	 * Diagnostics for the three external connections. Always returns 200 with
+	 * a check list so the UI can render partial results; "ok" is false when
+	 * any check has status "error".
+	 */
+	public static function admin_diagnose( WP_REST_Request $request ) {
+		$target = (string) $request['target'];
+		switch ( $target ) {
+			case 'drive':
+				$checks = PCT_Drive::diagnose();
+				break;
+			case 'image':
+				$checks = PCT_Vibe::diagnose();
+				break;
+			default:
+				$checks = PCT_AI::diagnose();
+		}
+		$ok = ! in_array( 'error', array_column( $checks, 'status' ), true );
+		return rest_ensure_response( array( 'ok' => $ok, 'target' => $target, 'checks' => $checks, 'time' => current_time( 'mysql' ) ) );
+	}
+
+	/**
+	 * Run the save-triggered export refresh now and return its status.
+	 */
+	public static function admin_sync() {
+		$s = PCT_Sync::run_now();
+		return rest_ensure_response( array( 'ok' => 'ok' === $s['state'], 'status' => $s, 'message' => PCT_Sync::describe( $s ), 'latest' => PCT_Drive::latest() ) );
 	}
 
 	/* ---------------------------------------------------------------- */
@@ -564,6 +608,7 @@ class PCT_Rest {
 			'_pct_organizer_url'    => esc_url_raw( (string) $request->get_param( 'organizer_url' ) ),
 			'_pct_event_url'        => esc_url_raw( (string) $request->get_param( 'event_url' ) ),
 			'_pct_gmaps_url'        => esc_url_raw( (string) $request->get_param( 'gmaps_url' ) ),
+			'_pct_socials'          => PCT_Meta_Boxes::sanitize_links( $request->get_param( 'socials' ) ),
 			'_pct_start'            => $start,
 			'_pct_end'              => self::sanitize_datetime( $request->get_param( 'end' ) ),
 			'_pct_venue'            => sanitize_text_field( (string) $request->get_param( 'venue' ) ),

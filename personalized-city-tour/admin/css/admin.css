@@ -92,6 +92,25 @@
 .pct-status-approved { background: #edfaef; color: #00701a; }
 .pct-status-pending { background: #fcf9e8; color: #8a6d00; }
 .pct-status-revoked { background: #fcf0f1; color: #b32d2e; }
+.pct-status-rejected { background: #fcf0f1; color: #b32d2e; }
+
+/* Diagnostics */
+.pct-diag { margin: 10px 0 0; padding: 10px 14px; border: 1px solid #dcdcde; border-radius: 4px; background: #fff; max-width: 720px; }
+.pct-diag ul { margin: 6px 0 0; list-style: none; }
+.pct-diag li { margin: 0 0 4px; padding-left: 18px; position: relative; word-break: break-word; }
+.pct-diag li::before { content: ''; position: absolute; left: 0; top: 6px; width: 10px; height: 10px; border-radius: 50%; background: #c3c4c7; }
+.pct-diag li.pct-diag-ok::before { background: #00a32a; }
+.pct-diag li.pct-diag-warn::before { background: #dba617; }
+.pct-diag li.pct-diag-error::before { background: #d63638; }
+.pct-diag-summary { margin: 0; font-weight: 600; }
+.pct-diag-summary.is-ok { color: #00701a; }
+.pct-diag-summary.is-error { color: #b32d2e; }
+.pct-consent-links { margin: 8px 0 10px; padding: 8px 12px; border: 1px solid #dcdcde; border-radius: 4px; }
+.pct-consent-links legend { font-weight: 600; padding: 0 4px; }
+.pct-consent-links code { margin-right: 6px; }
+.rtl .pct-diag li { padding-left: 0; padding-right: 18px; }
+.rtl .pct-diag li::before { left: auto; right: 0; }
+.rtl .pct-consent-links code { margin-right: 0; margin-left: 6px; }
 .pct-guides-table td { vertical-align: top; }
 
 /* meta boxes */

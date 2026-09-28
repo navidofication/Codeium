@@ -212,6 +212,21 @@ $tab_url = function ( $key ) {
 						<label class="pct-inline"><input type="checkbox" name="pct_settings[ai_allowed_fields][]" value="<?php echo esc_attr( $fk ); ?>" <?php checked( in_array( $fk, (array) $settings['ai_allowed_fields'], true ) ); ?> /> <?php echo esc_html( $fl ); ?></label>
 					<?php endforeach; ?>
 					<br>
+					<fieldset class="pct-consent-links">
+						<legend><?php esc_html_e( 'Send city database — access links', 'personalized-city-tour' ); ?></legend>
+						<label><input type="checkbox" name="pct_settings[ai_attach_drive_links]" value="1" <?php checked( $settings['ai_attach_drive_links'] ); ?> /> <?php esc_html_e( 'Attach access links to the newest city-database files stored in Google Drive', 'personalized-city-tour' ); ?></label><br>
+						<label><input type="checkbox" name="pct_settings[ai_attach_upload_links]" value="1" <?php checked( $settings['ai_attach_upload_links'] ); ?> /> <?php esc_html_e( 'Attach access links to the newest exports written to the uploads folder (wp-content/uploads/pct-exports)', 'personalized-city-tour' ); ?></label>
+						<p class="description"><?php esc_html_e( 'Only active together with the consent above. Drive files are shared as "anyone with the link (viewer)"; uploads links are signed and expire after 24 hours. Exports are refreshed automatically after every save of a city, place or event (see the Google Drive tab), so the AI reads the current database when generating tours.', 'personalized-city-tour' ); ?>
+						<?php $pct_latest = PCT_Drive::latest(); if ( $pct_latest ) : ?>
+							<br><?php esc_html_e( 'Newest exports:', 'personalized-city-tour' ); ?>
+							<?php foreach ( $pct_latest as $lt => $lrow ) : ?>
+								<code><?php echo esc_html( $lt . ' · ' . wp_date( 'Y-m-d H:i', (int) $lrow['time'] ) . ( ! empty( $lrow['drive_id'] ) ? ' · Drive' : '' ) . ( ! empty( $lrow['path'] ) ? ' · uploads' : '' ) ); ?></code>
+							<?php endforeach; ?>
+						<?php else : ?>
+							<br><?php esc_html_e( 'No export exists yet — save any city or use "Refresh now" in the Google Drive tab.', 'personalized-city-tour' ); ?>
+						<?php endif; ?>
+						</p>
+					</fieldset>
 					<label><input type="checkbox" name="pct_settings[ai_share_name]" value="1" <?php checked( $settings['ai_share_name'] ); ?> /> <?php esc_html_e( 'Include the traveller’s name in the request title / prompt', 'personalized-city-tour' ); ?></label><br>
 					<label><input type="checkbox" name="pct_settings[ai_share_contact]" value="1" <?php checked( $settings['ai_share_contact'] ); ?> /> <?php esc_html_e( 'Include e-mail / phone in the prompt (off by default)', 'personalized-city-tour' ); ?></label><br>
 					<label><input type="checkbox" name="pct_settings[ai_redact_pii]" value="1" <?php checked( $settings['ai_redact_pii'] ); ?> /> <?php esc_html_e( 'Redact e-mails, phone numbers and secrets in the audit log', 'personalized-city-tour' ); ?></label>
@@ -256,7 +271,12 @@ $tab_url = function ( $key ) {
 			</tr>
 			<tr>
 				<th scope="row"></th>
-				<td><button type="button" class="button" id="pct-ai-test"><?php esc_html_e( 'Test connection (uses saved settings)', 'personalized-city-tour' ); ?></button> <span id="pct-ai-test-result"></span></td>
+				<td>
+					<button type="button" class="button" id="pct-ai-test"><?php esc_html_e( 'Test connection (uses saved settings)', 'personalized-city-tour' ); ?></button>
+					<button type="button" class="button pct-diagnose" data-target="ai" data-result="pct-diag-ai"><?php esc_html_e( 'Diagnostic', 'personalized-city-tour' ); ?></button>
+					<span id="pct-ai-test-result"></span>
+					<div id="pct-diag-ai" class="pct-diag" hidden></div>
+				</td>
 			</tr>
 		</table>
 		<?php endif; ?>
@@ -388,7 +408,9 @@ $tab_url = function ( $key ) {
 							<span class="description"><?php esc_html_e( 'Save a client ID and secret first.', 'personalized-city-tour' ); ?></span>
 						<?php endif; ?>
 						<a class="button" href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=pct_drive_run' ), 'pct_drive_run' ) ); ?>"><?php esc_html_e( 'Run exports now', 'personalized-city-tour' ); ?></a>
+						<button type="button" class="button pct-diagnose" data-target="drive" data-result="pct-diag-drive"><?php esc_html_e( 'Diagnostic', 'personalized-city-tour' ); ?></button>
 					</p>
+					<div id="pct-diag-drive" class="pct-diag" hidden></div>
 				</td>
 			</tr>
 			<tr>
@@ -419,6 +441,18 @@ $tab_url = function ( $key ) {
 					</select>
 					<label><?php esc_html_e( 'Keep files for (days)', 'personalized-city-tour' ); ?> <input type="number" name="pct_settings[drive_retention_days]" value="<?php echo esc_attr( $settings['drive_retention_days'] ); ?>" min="0" max="3650" class="small-text" /></label>
 					<span class="description"><?php esc_html_e( '0 = never delete', 'personalized-city-tour' ); ?></span>
+				</td>
+			</tr>
+			<tr>
+				<th scope="row"><?php esc_html_e( 'Automatic refresh on save', 'personalized-city-tour' ); ?></th>
+				<td>
+					<?php $pct_sync = PCT_Sync::status(); ?>
+					<span class="pct-status pct-status-<?php echo esc_attr( 'failed' === $pct_sync['state'] ? 'rejected' : ( 'pending' === $pct_sync['state'] ? 'pending' : 'approved' ) ); ?>" id="pct-sync-state"><?php echo esc_html( $pct_sync['state'] ); ?></span>
+					<span id="pct-sync-message"><?php echo esc_html( PCT_Sync::describe( $pct_sync ) ); ?></span>
+					<p>
+						<button type="button" class="button" id="pct-sync-run"><?php esc_html_e( 'Refresh now', 'personalized-city-tour' ); ?></button>
+						<span class="description"><?php esc_html_e( 'Every save of a city, place or event re-writes the city-database export (uploads folder, plus Google Drive when connected) about a minute later via WP-Cron, with three retries. This is the data the AI is pointed to when access links are enabled.', 'personalized-city-tour' ); ?></span>
+					</p>
 				</td>
 			</tr>
 		</table>
@@ -494,6 +528,14 @@ $tab_url = function ( $key ) {
 			<tr>
 				<th scope="row"><label for="pct_image_api_key"><?php esc_html_e( 'Image API key', 'personalized-city-tour' ); ?></label></th>
 				<td><?php $secret_field( 'image_api_key', 'pct_image_api_key', __( 'Leave empty to reuse the AI provider key.', 'personalized-city-tour' ) ); ?></td>
+			</tr>
+			<tr>
+				<th scope="row"></th>
+				<td>
+					<button type="button" class="button pct-diagnose" data-target="image" data-result="pct-diag-image"><?php esc_html_e( 'Diagnostic', 'personalized-city-tour' ); ?></button>
+					<span class="description"><?php esc_html_e( 'Checks configuration and authenticates against the provider without generating an image.', 'personalized-city-tour' ); ?></span>
+					<div id="pct-diag-image" class="pct-diag" hidden></div>
+				</td>
 			</tr>
 		</table>
 		<?php endif; ?>

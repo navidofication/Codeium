@@ -524,12 +524,17 @@ class PCT_Tour_Generator {
 
 		$title = PCT_AI::request_title( (string) ( $form['name'] ?? '' ), $lang, $city['name'] );
 
-		return array(
+		// Access links to the newest exports (Drive and/or uploads) — only when the
+		// admin consented to sending the city database and enabled the option(s).
+		$links = PCT_AI::city_db_consent() ? PCT_Sync::ai_links() : array();
+
+		$payload = array(
 			'title'        => $title,
 			'consent'      => array(
 				'city_db_to_ai'   => PCT_AI::city_db_consent(),
 				'allowed_fields'  => $allowed,
 				'contact_shared'  => $share_contact,
+				'export_links'    => array_values( array_unique( array_column( $links, 'source' ) ) ),
 			),
 			'instructions' => array(
 				'days'                 => $days,
@@ -545,6 +550,13 @@ class PCT_Tour_Generator {
 			'traveller'    => $profile,
 			'items'        => $compact,
 		);
+		if ( $links ) {
+			$payload['city_database_files'] = array(
+				'note'  => 'Full, current JSON exports of the city database (cities, places, events). Fetch them when you need details beyond the "items" list; item ids are identical.',
+				'files' => $links,
+			);
+		}
+		return $payload;
 	}
 
 	public static function system_prompt( array $city, $lang ) {
@@ -637,6 +649,15 @@ class PCT_Tour_Generator {
 	 */
 	private static function cache_key( array $payload, $system ) {
 		unset( $payload['title'], $payload['instructions']['today'] );
+		// Signed upload links change on every request; key on the file names only.
+		if ( ! empty( $payload['city_database_files']['files'] ) ) {
+			$payload['city_database_files']['files'] = array_map(
+				function ( $f ) {
+					return $f['source'] . ':' . $f['type'] . ':' . $f['updated'];
+				},
+				$payload['city_database_files']['files']
+			);
+		}
 		$gen = (int) get_option( 'pct_tour_cache_gen', 0 );
 		return 'pct_tour_' . md5( $gen . '|' . wp_json_encode( $payload ) . '|' . $system . '|' . PCT_Settings::get( 'ai_provider' ) . '|' . PCT_Settings::get( 'ai_model' ) );
 	}

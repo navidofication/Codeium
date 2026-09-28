@@ -77,6 +77,8 @@ class PCT_Settings {
 			'ai_max_items'             => 60,
 			'ai_timeout'               => 90,
 			'ai_consent_city_db'       => 0,
+			'ai_attach_drive_links'    => 0,
+			'ai_attach_upload_links'   => 0,
 			'ai_allowed_fields'        => array( 'name', 'type', 'categories', 'tags', 'summary', 'price_tier', 'accessibility', 'duration', 'best_time', 'hours', 'start', 'end', 'venue', 'organizer', 'channels' ),
 			'ai_share_name'            => 0,
 			'ai_share_contact'         => 0,
@@ -292,6 +294,8 @@ class PCT_Settings {
 			$out['ai_max_items']      = max( 10, min( 300, absint( $input['ai_max_items'] ?? 60 ) ) );
 			$out['ai_timeout']        = max( 15, min( 600, absint( $input['ai_timeout'] ?? 90 ) ) );
 			$out['ai_consent_city_db'] = self::bool( $input, 'ai_consent_city_db' );
+			$out['ai_attach_drive_links']  = self::bool( $input, 'ai_attach_drive_links' );
+			$out['ai_attach_upload_links'] = self::bool( $input, 'ai_attach_upload_links' );
 			$out['ai_share_name']     = self::bool( $input, 'ai_share_name' );
 			$out['ai_share_contact']  = self::bool( $input, 'ai_share_contact' );
 			$out['ai_log_level']      = in_array( $input['ai_log_level'] ?? '', array( 'none', 'minimal', 'full' ), true ) ? $input['ai_log_level'] : 'minimal';
