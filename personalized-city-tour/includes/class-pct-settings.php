@@ -5,7 +5,7 @@
  * Secrets (API keys, tokens) are stored encrypted through PCT_Secrets and may
  * be overridden with constants in wp-config.php:
  *   PCT_AI_API_KEY, PCT_GOOGLE_MAPS_API_KEY, PCT_MAPBOX_TOKEN,
- *   PCT_TRANSLATION_API_KEY, PCT_DRIVE_CLIENT_SECRET, PCT_SMS_API_KEY, PCT_IMAGE_API_KEY.
+ *   PCT_TRANSLATION_API_KEY, PCT_DRIVE_CLIENT_SECRET, PCT_SMS_API_KEY, PCT_IMAGE_API_KEY, PCT_IMAGE_HF_API_KEY.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -36,6 +36,11 @@ class PCT_Settings {
 			'drive_refresh_token' => '',
 			'sms_api_key'         => 'PCT_SMS_API_KEY',
 			'image_api_key'       => 'PCT_IMAGE_API_KEY',
+			'image_hf_api_key'    => 'PCT_IMAGE_HF_API_KEY',
+			'image_gemini_api_key' => 'PCT_IMAGE_GEMINI_API_KEY',
+			'image_higgsfield_key_id' => 'PCT_IMAGE_HIGGSFIELD_KEY_ID',
+			'image_higgsfield_key_secret' => 'PCT_IMAGE_HIGGSFIELD_KEY_SECRET',
+			'push_vapid_private' => '',
 		);
 	}
 
@@ -55,7 +60,7 @@ class PCT_Settings {
 			'guide_require_mobile'     => 1,
 			'store_submissions'        => 1,
 			'notify_admin_guides'      => 1,
-			'stops_per_day'            => 3,
+			'stops_per_day'            => 18,
 			'calendar'                 => 'both',
 
 			/* languages */
@@ -69,17 +74,17 @@ class PCT_Settings {
 			/* AI */
 			'ai_provider'              => 'none',
 			'ai_api_key'               => '',
-			'ai_model'                 => 'gpt-4o-mini',
+			'ai_model'                 => 'gpt-5.6-luna',
 			'ai_deployment'            => '',
 			'ai_model_map'             => array(),
 			'ai_endpoint'              => '',
 			'ai_temperature'           => '0.6',
-			'ai_max_items'             => 60,
+			'ai_max_items'             => 40,
 			'ai_timeout'               => 90,
 			'ai_consent_city_db'       => 0,
 			'ai_attach_drive_links'    => 0,
 			'ai_attach_upload_links'   => 0,
-			'ai_allowed_fields'        => array( 'name', 'type', 'categories', 'tags', 'summary', 'price_tier', 'accessibility', 'duration', 'best_time', 'hours', 'start', 'end', 'venue', 'organizer', 'channels' ),
+			'ai_allowed_fields'        => array( 'name', 'type', 'categories', 'tags', 'summary', 'address', 'coordinates', 'link', 'images', 'price_tier', 'accessibility', 'duration', 'best_time', 'hours', 'start', 'end', 'venue', 'organizer', 'channels', 'socials', 'ar' ),
 			'ai_share_name'            => 0,
 			'ai_share_contact'         => 0,
 			'ai_log_level'             => 'minimal',
@@ -92,13 +97,16 @@ class PCT_Settings {
 			'ai_cache_ttl'             => 360,
 			'ai_batch_window'          => 30,
 			'ai_prompt_template'       => '',
+			'ai_web_search'           => 1,
+			'channel_intel_enabled'   => 1,
 
 			/* maps */
 			'map_provider'             => 'osm',
 			'google_maps_api_key'      => '',
 			'mapbox_token'             => '',
-			'routing_provider'         => 'osrm',
+			'routing_provider'         => 'valhalla',
 			'osrm_endpoint'            => 'https://router.project-osrm.org',
+			'valhalla_endpoint'        => 'https://valhalla1.openstreetmap.de',
 			'tile_url'                 => 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
 			'tile_attribution'         => '&copy; OpenStreetMap contributors',
 			'show_mymaps_public'       => 0,
@@ -132,10 +140,17 @@ class PCT_Settings {
 			'sms_sender'               => '',
 			'sms_country_code'         => '98',
 			'admin_mobile'             => '',
-			'image_provider'           => 'mock',
+			'image_provider'           => 'pollinations',
+			'image_gemini_model'      => 'gemini-3.1-flash-image',
+			'image_higgsfield_model'  => 'z-image/turbo',
 			'image_endpoint'           => '',
 			'image_api_key'            => '',
-			'image_model'              => 'gpt-image-1',
+			'image_model'              => 'flux',
+			'image_fallback_enabled'  => 1,
+			'image_hf_api_key'        => '',
+			'image_hf_model'          => 'black-forest-labs/FLUX.1-schnell',
+			'push_vapid_public'       => '',
+			'push_vapid_private'      => '',
 		);
 	}
 
@@ -258,7 +273,7 @@ class PCT_Settings {
 			$out['guide_require_mobile'] = self::bool( $input, 'guide_require_mobile' );
 			$out['store_submissions']    = self::bool( $input, 'store_submissions' );
 			$out['notify_admin_guides']  = self::bool( $input, 'notify_admin_guides' );
-			$out['stops_per_day']        = max( 1, min( 8, absint( $input['stops_per_day'] ?? 3 ) ) );
+			$out['stops_per_day']        = max( 1, min( 18, absint( $input['stops_per_day'] ?? 18 ) ) );
 			$out['calendar']             = in_array( $input['calendar'] ?? '', array( 'both', 'jalali', 'gregorian' ), true ) ? $input['calendar'] : 'both';
 			$roles                       = array_keys( wp_roles()->roles );
 			$out['analytics_roles']      = array_values( array_intersect( array_map( 'sanitize_key', (array) ( $input['analytics_roles'] ?? array() ) ), $roles ) );
@@ -308,10 +323,15 @@ class PCT_Settings {
 			$out['ai_cache_ttl']      = max( 0, min( 43200, absint( $input['ai_cache_ttl'] ?? 360 ) ) );
 			$out['ai_batch_window']   = max( 0, min( 120, absint( $input['ai_batch_window'] ?? 30 ) ) );
 			$out['ai_prompt_template'] = sanitize_textarea_field( $input['ai_prompt_template'] ?? '' );
+			$out['ai_web_search']     = self::bool( $input, 'ai_web_search' );
+			$out['channel_intel_enabled'] = self::bool( $input, 'channel_intel_enabled' );
 			$allowed                  = array_keys( PCT_Tour_Generator::extract_fields() );
-			$out['ai_allowed_fields'] = array_values( array_intersect( array_map( 'sanitize_key', (array) ( $input['ai_allowed_fields'] ?? array() ) ), $allowed ) );
+				$out['ai_allowed_fields'] = array_values( array_intersect( array_map( 'sanitize_key', (array) ( $input['ai_allowed_fields'] ?? array() ) ), $allowed ) );
+			// These fields are required for reliable route/time/link generation.
+			$required_ai_fields = array( 'name', 'type', 'categories', 'tags', 'summary', 'address', 'coordinates', 'link', 'images', 'price_tier', 'accessibility', 'duration', 'best_time', 'hours', 'start', 'end', 'venue', 'organizer', 'channels', 'socials', 'ar' );
+			$out['ai_allowed_fields'] = array_values( array_unique( array_merge( $out['ai_allowed_fields'], $required_ai_fields ) ) );
 			if ( empty( $out['ai_allowed_fields'] ) ) {
-				$out['ai_allowed_fields'] = array( 'name', 'type', 'categories' );
+				$out['ai_allowed_fields'] = $required_ai_fields;
 			}
 			$map = array();
 			foreach ( (array) ( $input['ai_model_map'] ?? array() ) as $row ) {
@@ -332,11 +352,13 @@ class PCT_Settings {
 
 		if ( $is( 'maps' ) ) {
 			$out['map_provider']       = in_array( $input['map_provider'] ?? '', array( 'osm', 'google', 'mapbox' ), true ) ? $input['map_provider'] : 'osm';
-			$out['routing_provider']   = in_array( $input['routing_provider'] ?? '', array( 'osrm', 'google', 'mapbox', 'straight' ), true ) ? $input['routing_provider'] : 'osrm';
+			$out['routing_provider']   = in_array( $input['routing_provider'] ?? '', array( 'osrm', 'valhalla', 'google', 'mapbox', 'straight' ), true ) ? $input['routing_provider'] : 'valhalla';
 			$out['osrm_endpoint']      = esc_url_raw( untrailingslashit( trim( (string) ( $input['osrm_endpoint'] ?? $defaults['osrm_endpoint'] ) ) ) );
 			if ( '' === $out['osrm_endpoint'] ) {
 				$out['osrm_endpoint'] = $defaults['osrm_endpoint'];
 			}
+			$out['valhalla_endpoint'] = esc_url_raw( untrailingslashit( trim( (string) ( $input['valhalla_endpoint'] ?? $defaults['valhalla_endpoint'] ) ) ) );
+			if ( '' === $out['valhalla_endpoint'] ) { $out['valhalla_endpoint'] = $defaults['valhalla_endpoint']; }
 			$tile                      = trim( (string) ( $input['tile_url'] ?? '' ) );
 			$out['tile_url']           = $tile ? esc_url_raw( $tile ) : $defaults['tile_url'];
 			$out['tile_attribution']   = wp_kses_post( $input['tile_attribution'] ?? $defaults['tile_attribution'] );
@@ -370,11 +392,22 @@ class PCT_Settings {
 			$out['sms_sender']     = sanitize_text_field( $input['sms_sender'] ?? '' );
 			$out['sms_country_code'] = preg_replace( '/\D/', '', (string) ( $input['sms_country_code'] ?? '' ) );
 			$out['admin_mobile']   = preg_replace( '/[^0-9+]/', '', (string) ( $input['admin_mobile'] ?? '' ) );
-			$out['image_provider'] = in_array( $input['image_provider'] ?? '', array( 'mock', 'openai', 'custom' ), true ) ? $input['image_provider'] : 'mock';
+			$out['image_provider'] = in_array( $input['image_provider'] ?? '', array( 'mock', 'openai', 'custom', 'pollinations', 'huggingface', 'gemini', 'higgsfield' ), true ) ? $input['image_provider'] : 'pollinations';
 			$out['image_endpoint'] = esc_url_raw( trim( (string) ( $input['image_endpoint'] ?? '' ) ) );
-			$out['image_model']    = sanitize_text_field( $input['image_model'] ?? 'gpt-image-1' ) ?: 'gpt-image-1';
+			$out['image_model']    = sanitize_text_field( $input['image_model'] ?? ( 'openai' === ( $input['image_provider'] ?? '' ) ? 'gpt-image-2.5-sunburst' : 'flux' ) ) ?: ( 'openai' === ( $input['image_provider'] ?? '' ) ? 'gpt-image-2.5-sunburst' : 'flux' );
+			if ( 'openai' === $out['image_provider'] && in_array( $out['image_model'], array( 'gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.4-mini', 'gpt-image-2.5-flare' ), true ) ) {
+				$out['image_model'] = 'gpt-image-2.5-sunburst';
+			}
+			$out['image_fallback_enabled'] = self::bool( $input, 'image_fallback_enabled' );
+			$out['image_hf_model'] = sanitize_text_field( $input['image_hf_model'] ?? 'black-forest-labs/FLUX.1-schnell' ) ?: 'black-forest-labs/FLUX.1-schnell';
+			$out['image_gemini_model'] = sanitize_text_field( $input['image_gemini_model'] ?? 'gemini-3.1-flash-image' ) ?: 'gemini-3.1-flash-image';
+			$out['image_higgsfield_model'] = sanitize_text_field( $input['image_higgsfield_model'] ?? 'z-image/turbo' ) ?: 'z-image/turbo';
 			self::secret_field( $out, $input, 'sms_api_key' );
 			self::secret_field( $out, $input, 'image_api_key' );
+			self::secret_field( $out, $input, 'image_hf_api_key' );
+			self::secret_field( $out, $input, 'image_gemini_api_key' );
+			self::secret_field( $out, $input, 'image_higgsfield_key_id' );
+			self::secret_field( $out, $input, 'image_higgsfield_key_secret' );
 		}
 
 		// Roles depend on auto-publish; refresh them when it changes.

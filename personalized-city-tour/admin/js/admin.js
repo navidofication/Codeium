@@ -351,4 +351,22 @@
 			});
 		}
 	}
+	document.addEventListener('click', function (e) {
+		var btn = e.target.closest ? e.target.closest('.pct-mymap-refresh') : null;
+		if (!btn) { return; }
+		e.preventDefault();
+		if (btn.dataset.running === '1') { return; }
+		btn.dataset.running = '1';
+		btn.disabled = true;
+		var form = document.createElement('form');
+		form.method = 'post';
+		form.action = btn.getAttribute('data-action-url') || '';
+		[['action','pct_refresh_mymaps'], ['city_id', btn.getAttribute('data-city-id') || '0'], ['_wpnonce', btn.getAttribute('data-nonce') || '']].forEach(function (pair) {
+			var input = document.createElement('input');
+			input.type = 'hidden'; input.name = pair[0]; input.value = pair[1]; form.appendChild(input);
+		});
+		document.body.appendChild(form);
+		form.submit();
+	});
+
 })();

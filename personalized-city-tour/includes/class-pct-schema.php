@@ -138,6 +138,60 @@ class PCT_Schema {
 				'note'    => array( 'type' => 'string', 'maxLength' => 600 ),
 			),
 		);
+		$proposal_count = max( 4, (int) $days * 4 );
+		$proposal = array(
+			'type'                 => 'object',
+			'required'             => array( 'day', 'proposal_number', 'stops' ),
+			'additionalProperties' => true,
+			'properties'           => array(
+				'day'                 => array( 'type' => 'integer', 'minimum' => 1, 'maximum' => 14 ),
+				'proposal_number'     => array( 'type' => 'integer', 'minimum' => 1, 'maximum' => 4 ),
+				'proposal_type'       => array( 'type' => 'string', 'maxLength' => 40 ),
+				'title'               => array( 'type' => 'string', 'maxLength' => 200 ),
+				'summary'             => array( 'type' => 'string', 'maxLength' => 2000 ),
+				'stops'               => array(
+					'type'     => 'array',
+					'minItems' => 3,
+					'maxItems' => 18,
+					'items'    => $stop,
+				),
+				'alternatives'        => array( 'type' => 'array', 'maxItems' => 1, 'items' => $stop ),
+				'serendipity'         => array(
+					'type' => 'array', 'maxItems' => 2,
+					'items' => array(
+						'type' => 'object', 'required' => array( 'item_id', 'note', 'reason' ), 'additionalProperties' => false,
+						'properties' => array(
+							'item_id' => array( 'type' => 'integer', 'minimum' => 1 ),
+							'note' => array( 'type' => 'string', 'maxLength' => 600 ),
+							'reason' => array( 'type' => 'string', 'maxLength' => 300 ),
+						),
+					),
+				),
+				'accessibility_notes' => array( 'type' => 'string', 'maxLength' => 2000 ),
+				'quick_search_hints'  => array( 'type' => 'array', 'maxItems' => 8, 'items' => array( 'type' => 'string', 'maxLength' => 120 ) ),
+			),
+		);
+		$channel_candidate = array(
+			'type' => 'object',
+			'required' => array( 'source_url', 'name', 'type', 'summary', 'start', 'end', 'venue', 'lat', 'lng', 'price_tier', 'categories', 'tags', 'duration', 'confidence' ),
+			'additionalProperties' => false,
+			'properties' => array(
+				'source_url' => array( 'type' => 'string', 'maxLength' => 1000 ),
+				'name' => array( 'type' => 'string', 'maxLength' => 180 ),
+				'type' => array( 'type' => 'string', 'enum' => array( 'event', 'place' ) ),
+				'summary' => array( 'type' => 'string', 'maxLength' => 1200 ),
+				'start' => array( 'type' => 'string', 'maxLength' => 40 ),
+				'end' => array( 'type' => 'string', 'maxLength' => 40 ),
+				'venue' => array( 'type' => 'string', 'maxLength' => 300 ),
+				'lat' => array( 'type' => array( 'number', 'null' ), 'minimum' => -90, 'maximum' => 90 ),
+				'lng' => array( 'type' => array( 'number', 'null' ), 'minimum' => -180, 'maximum' => 180 ),
+				'price_tier' => array( 'type' => 'string', 'enum' => array( '', 'free', 'low', 'medium', 'high' ) ),
+				'categories' => array( 'type' => 'array', 'maxItems' => 8, 'items' => array( 'type' => 'string', 'maxLength' => 40 ) ),
+				'tags' => array( 'type' => 'array', 'maxItems' => 12, 'items' => array( 'type' => 'string', 'maxLength' => 60 ) ),
+				'duration' => array( 'type' => 'integer', 'minimum' => 15, 'maximum' => 360 ),
+				'confidence' => array( 'type' => 'number', 'minimum' => 0, 'maximum' => 1 ),
+			),
+		);
 		return array(
 			'type'                 => 'object',
 			'required'             => array( 'days' ),
@@ -145,29 +199,24 @@ class PCT_Schema {
 			'properties'           => array(
 				'title'   => array( 'type' => 'string', 'maxLength' => 200 ),
 				'summary' => array( 'type' => 'string', 'maxLength' => 2000 ),
-				'days'    => array(
-					'type'     => 'array',
-					'minItems' => 1,
-					'maxItems' => max( 1, (int) $days ),
-					'items'    => array(
-						'type'                 => 'object',
-						'required'             => array( 'day', 'stops' ),
-						'additionalProperties' => true,
-						'properties'           => array(
-							'day'                 => array( 'type' => 'integer', 'minimum' => 1, 'maximum' => 14 ),
-							'title'               => array( 'type' => 'string', 'maxLength' => 200 ),
-							'summary'             => array( 'type' => 'string', 'maxLength' => 2000 ),
-							'stops'               => array(
-								'type'     => 'array',
-								'minItems' => 1,
-								'maxItems' => max( 3, (int) $stops_per_day + 2 ),
-								'items'    => $stop,
-							),
-							'alternatives'        => array( 'type' => 'array', 'maxItems' => 6, 'items' => $stop ),
-							'accessibility_notes' => array( 'type' => 'string', 'maxLength' => 2000 ),
-							'quick_search_hints'  => array( 'type' => 'array', 'maxItems' => 8, 'items' => array( 'type' => 'string', 'maxLength' => 120 ) ),
+				'channel_candidates' => array( 'type' => 'array', 'maxItems' => 24, 'items' => $channel_candidate ),
+				'channel_research' => array(
+					'type' => 'array', 'maxItems' => 8,
+					'items' => array(
+						'type' => 'object', 'required' => array( 'source_url', 'checked', 'current_relevant', 'reason' ), 'additionalProperties' => false,
+						'properties' => array(
+							'source_url' => array( 'type' => 'string', 'maxLength' => 1000 ),
+							'checked' => array( 'type' => 'boolean' ),
+							'current_relevant' => array( 'type' => 'boolean' ),
+							'reason' => array( 'type' => 'string', 'maxLength' => 500 ),
 						),
 					),
+				),
+				'days'    => array(
+					'type'     => 'array',
+					'minItems' => $proposal_count,
+					'maxItems' => $proposal_count,
+					'items'    => $proposal,
 				),
 			),
 		);

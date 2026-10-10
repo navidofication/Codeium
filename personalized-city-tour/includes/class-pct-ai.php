@@ -38,15 +38,17 @@ class PCT_AI {
 				array( 'model' => 'devin-fast', 'deployment' => '', 'label' => 'Devin Fast' ),
 			),
 			'openai'    => array(
-				array( 'model' => 'gpt-4o-mini', 'deployment' => '', 'label' => 'GPT-4o mini' ),
-				array( 'model' => 'gpt-4o', 'deployment' => '', 'label' => 'GPT-4o' ),
+				array( 'model' => 'gpt-5.6-luna', 'deployment' => '', 'label' => 'GPT-5.6 Luna (cost-optimized)' ),
+				array( 'model' => 'gpt-5.6-terra', 'deployment' => '', 'label' => 'GPT-5.6 Terra' ),
 				array( 'model' => 'gpt-4.1-mini', 'deployment' => '', 'label' => 'GPT-4.1 mini' ),
+				array( 'model' => 'gpt-4o', 'deployment' => '', 'label' => 'GPT-4o' ),
 				array( 'model' => 'gpt-4.1', 'deployment' => '', 'label' => 'GPT-4.1' ),
 				array( 'model' => 'o4-mini', 'deployment' => '', 'label' => 'o4-mini (reasoning)' ),
 			),
 			'azure'     => array(
-				array( 'model' => 'gpt-4o-mini', 'deployment' => 'gpt-4o-mini', 'label' => 'GPT-4o mini deployment' ),
-				array( 'model' => 'gpt-4o', 'deployment' => 'gpt-4o', 'label' => 'GPT-4o deployment' ),
+				array( 'model' => 'gpt-5.6-luna', 'deployment' => 'gpt-5.6-luna', 'label' => 'GPT-5.6 Luna deployment' ),
+				array( 'model' => 'gpt-5.6-terra', 'deployment' => 'gpt-5.6-terra', 'label' => 'GPT-5.6 Terra deployment' ),
+				array( 'model' => 'gpt-4.1-mini', 'deployment' => 'gpt-4.1-mini', 'label' => 'GPT-4.1 mini deployment' ),
 			),
 			'anthropic' => array(
 				array( 'model' => 'claude-3-5-haiku-latest', 'deployment' => '', 'label' => 'Claude 3.5 Haiku' ),
@@ -173,6 +175,7 @@ class PCT_AI {
 				'retry'           => (bool) PCT_Settings::get( 'ai_retry_invalid', 1 ),
 				'mock'            => null,
 				'skip_rate_limit' => false,
+				'web_search'      => false,
 			)
 		);
 		$provider = self::sandbox() ? 'sandbox' : (string) PCT_Settings::get( 'ai_provider' );
@@ -286,6 +289,10 @@ class PCT_AI {
 		$endpoint    = (string) PCT_Settings::get( 'ai_endpoint' );
 		$deployment  = self::deployment( $provider, $model );
 
+		if ( 'openai' === $provider && ! empty( $opts['web_search'] ) ) {
+			return self::openai_responses_request( $key, $endpoint, $model, $system, $user, $temperature, $opts );
+		}
+
 		if ( 'devin' === $provider ) {
 			return self::devin_request( $key, $endpoint, $model, $system, $user );
 		}
@@ -313,25 +320,23 @@ class PCT_AI {
 				break;
 
 			case 'azure':
-				// Endpoint: https://my-resource.openai.azure.com (deployment appended) or a full deployment URL.
+				// Supports current Azure AI Foundry v1 OpenAI-compatible endpoints
+				// and the older deployment-style Azure OpenAI URL for migration.
 				if ( ! $endpoint ) {
 					return new WP_Error( 'pct_ai_config', __( 'Azure OpenAI requires the resource endpoint URL.', 'personalized-city-tour' ) );
 				}
 				$url = untrailingslashit( $endpoint );
-				if ( false === strpos( $url, '/deployments/' ) ) {
-					$url .= '/openai/deployments/' . rawurlencode( $deployment ? $deployment : $model );
+				if ( false !== strpos( $url, '/openai/v1' ) ) {
+					if ( false === strpos( $url, '/chat/completions' ) ) { $url .= '/chat/completions'; }
+					$headers = array( 'Content-Type' => 'application/json', 'api-key' => $key );
+					$body = self::openai_body( $deployment ? $deployment : $model, $system, $user, $temperature, $opts );
+					break;
 				}
-				if ( false === strpos( $url, '/chat/completions' ) ) {
-					$url .= '/chat/completions';
-				}
-				if ( false === strpos( $url, 'api-version=' ) ) {
-					$url = add_query_arg( 'api-version', '2024-08-01-preview', $url );
-				}
-				$headers = array(
-					'Content-Type' => 'application/json',
-					'api-key'      => $key,
-				);
-				$body    = self::openai_body( $deployment ? $deployment : $model, $system, $user, $temperature );
+				if ( false === strpos( $url, '/deployments/' ) ) { $url .= '/openai/deployments/' . rawurlencode( $deployment ? $deployment : $model ); }
+				if ( false === strpos( $url, '/chat/completions' ) ) { $url .= '/chat/completions'; }
+				if ( false === strpos( $url, 'api-version=' ) ) { $url = add_query_arg( 'api-version', '2024-08-01-preview', $url ); }
+				$headers = array( 'Content-Type' => 'application/json', 'api-key' => $key );
+				$body = self::openai_body( $deployment ? $deployment : $model, $system, $user, $temperature, $opts );
 				break;
 
 			case 'custom':
@@ -346,7 +351,7 @@ class PCT_AI {
 					'Content-Type'  => 'application/json',
 					'Authorization' => 'Bearer ' . $key,
 				);
-				$body    = self::openai_body( $deployment ? $deployment : $model, $system, $user, $temperature );
+				$body    = self::openai_body( $deployment ? $deployment : $model, $system, $user, $temperature, $opts );
 				break;
 
 			case 'openai':
@@ -356,7 +361,7 @@ class PCT_AI {
 					'Content-Type'  => 'application/json',
 					'Authorization' => 'Bearer ' . $key,
 				);
-				$body    = self::openai_body( $model ? $model : 'gpt-4o-mini', $system, $user, $temperature );
+				$body    = self::openai_body( $model ? $model : 'gpt-5.6-luna', $system, $user, $temperature, $opts );
 				break;
 		}
 
@@ -375,8 +380,16 @@ class PCT_AI {
 		}
 		$code = wp_remote_retrieve_response_code( $response );
 		$data = json_decode( wp_remote_retrieve_body( $response ), true );
+		$request_id = (string) wp_remote_retrieve_header( $response, 'x-request-id' );
+		$retry_after = (string) wp_remote_retrieve_header( $response, 'retry-after' );
+		$remaining = (string) wp_remote_retrieve_header( $response, 'x-ratelimit-remaining-tokens' );
 		if ( $code < 200 || $code >= 300 ) {
 			$msg = isset( $data['error']['message'] ) ? $data['error']['message'] : wp_remote_retrieve_response_message( $response );
+			$meta = array();
+			if ( $request_id ) { $meta[] = 'request_id=' . sanitize_text_field( $request_id ); }
+			if ( $retry_after ) { $meta[] = 'retry_after=' . sanitize_text_field( $retry_after ); }
+			if ( $remaining ) { $meta[] = 'remaining_tokens=' . sanitize_text_field( $remaining ); }
+			if ( $meta ) { $msg .= ' [' . implode( ', ', $meta ) . ']'; }
 			if ( 401 === (int) $code || 403 === (int) $code ) {
 				$msg .= ' — ' . __( 'check the API key.', 'personalized-city-tour' );
 			}
@@ -537,22 +550,141 @@ class PCT_AI {
 		return new WP_Error( 'pct_ai_timeout', __( 'Devin did not answer within the configured time budget.', 'personalized-city-tour' ) );
 	}
 
-	private static function openai_body( $model, $system, $user, $temperature ) {
-		return array(
-			'model'           => $model,
-			'temperature'     => $temperature,
-			'response_format' => array( 'type' => 'json_object' ),
-			'messages'        => array(
+
+	/**
+	 * OpenAI Responses API adapter with the hosted web_search tool. This is
+	 * intentionally limited to the first-party OpenAI provider; Azure/custom
+	 * gateways continue to use their existing Chat Completions contract.
+	 */
+	private static function openai_responses_request( $key, $endpoint, $model, $system, $user, $temperature, array $opts = array() ) {
+		$url = 'https://api.openai.com/v1/responses';
+		// A custom endpoint is only used when it already points at the Responses API.
+		if ( $endpoint && false !== strpos( $endpoint, '/responses' ) ) {
+			$url = $endpoint;
+		}
+		$body = array(
+			'model'        => $model ? $model : 'gpt-5.6-luna',
+			'instructions' => $system,
+			'input'        => $user,
+			'tools'        => array(
 				array(
-					'role'    => 'system',
-					'content' => $system,
-				),
-				array(
-					'role'    => 'user',
-					'content' => $user,
+					'type'                => 'web_search',
+					'search_context_size' => 'medium',
 				),
 			),
+			'store' => false,
 		);
+		if ( preg_match( '/^gpt-5/', strtolower( $model ) ) ) {
+			$body['reasoning'] = array( 'effort' => 'low' );
+		} elseif ( $temperature >= 0 ) {
+			$body['temperature'] = $temperature;
+		}
+		if ( ! empty( $opts['schema'] ) && is_array( $opts['schema'] ) ) {
+			$body['text'] = array(
+				'format' => array(
+					'type'   => 'json_schema',
+					'name'   => 'pct_tour_response',
+					'strict' => true,
+					'schema' => self::strict_schema( $opts['schema'] ),
+				),
+			);
+		} else {
+			$body['text'] = array( 'format' => array( 'type' => 'json_object' ) );
+		}
+		$body = apply_filters( 'pct_ai_responses_request_body', $body, 'openai' );
+		$response = self::post_with_retry(
+			$url,
+			array(
+				'timeout' => (int) PCT_Settings::get( 'ai_timeout', 90 ),
+				'headers' => array(
+					'Content-Type'  => 'application/json',
+					'Authorization' => 'Bearer ' . $key,
+				),
+				'body' => wp_json_encode( $body ),
+			)
+		);
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+		$code = (int) wp_remote_retrieve_response_code( $response );
+		$data = json_decode( wp_remote_retrieve_body( $response ), true );
+		$request_id = (string) wp_remote_retrieve_header( $response, 'x-request-id' );
+		$retry_after = (string) wp_remote_retrieve_header( $response, 'retry-after' );
+		if ( $code < 200 || $code >= 300 ) {
+			$msg = is_array( $data ) ? (string) ( $data['error']['message'] ?? $data['message'] ?? '' ) : '';
+			if ( '' === $msg ) { $msg = wp_remote_retrieve_response_message( $response ); }
+			$meta = array();
+			if ( $request_id ) { $meta[] = 'request_id=' . sanitize_text_field( $request_id ); }
+			if ( $retry_after ) { $meta[] = 'retry_after=' . sanitize_text_field( $retry_after ); }
+			if ( $meta ) { $msg .= ' [' . implode( ', ', $meta ) . ']'; }
+			return new WP_Error( 'pct_ai_http', sprintf( __( 'AI web-search request failed (%1$s): %2$s', 'personalized-city-tour' ), $code, $msg ) );
+		}
+		if ( isset( $data['output_text'] ) && is_string( $data['output_text'] ) ) {
+			return $data['output_text'];
+		}
+		$text = '';
+		foreach ( (array) ( $data['output'] ?? array() ) as $item ) {
+			if ( 'message' !== ( $item['type'] ?? '' ) ) { continue; }
+			foreach ( (array) ( $item['content'] ?? array() ) as $content ) {
+				if ( 'output_text' === ( $content['type'] ?? '' ) && isset( $content['text'] ) ) {
+					$text .= (string) $content['text'];
+				}
+			}
+		}
+		return trim( $text );
+	}
+
+	private static function openai_body( $model, $system, $user, $temperature, array $opts = array() ) {
+		$body = array(
+			'model'    => $model,
+			'messages' => array(
+				array( 'role' => 'system', 'content' => $system ),
+				array( 'role' => 'user', 'content' => $user ),
+			),
+		);
+		// GPT-5.6 reasoning models use reasoning effort instead of sampling
+		// temperature; omitting unsupported fields keeps this adapter portable.
+		if ( ! preg_match( '/^(gpt-5(?:\.6)?|o[0-9])/', strtolower( $model ) ) ) {
+			$body['temperature'] = $temperature;
+		}
+		if ( preg_match( '/^gpt-5\.6-/', strtolower( $model ) ) ) {
+			$body['reasoning_effort'] = 'low';
+			$body['max_completion_tokens'] = 5000;
+		}
+		if ( ! empty( $opts['schema'] ) && is_array( $opts['schema'] ) ) {
+			$body['response_format'] = array(
+				'type' => 'json_schema',
+				'json_schema' => array(
+					'name' => 'pct_tour_response',
+					'strict' => true,
+					'schema' => self::strict_schema( $opts['schema'] ),
+				),
+			);
+		} else {
+			$body['response_format'] = array( 'type' => 'json_object' );
+		}
+		return $body;
+	}
+
+	private static function strict_schema( $schema ) {
+		if ( ! is_array( $schema ) ) { return $schema; }
+		$out = array();
+		foreach ( $schema as $key => $value ) {
+			if ( in_array( $key, array( 'additionalProperties', 'required' ), true ) ) { continue; }
+			if ( 'properties' === $key && is_array( $value ) ) {
+				$out['properties'] = array();
+				foreach ( $value as $name => $property ) { $out['properties'][ $name ] = self::strict_schema( $property ); }
+				$out['required'] = array_keys( $value );
+				continue;
+			}
+			if ( 'items' === $key && is_array( $value ) ) { $out[ $key ] = self::strict_schema( $value ); continue; }
+			$out[ $key ] = $value;
+		}
+		if ( isset( $out['type'] ) && 'object' === $out['type'] ) {
+			$out['additionalProperties'] = false;
+			if ( ! isset( $out['required'] ) ) { $out['required'] = array(); }
+		}
+		return $out;
 	}
 
 	/**

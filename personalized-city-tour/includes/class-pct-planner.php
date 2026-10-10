@@ -53,6 +53,9 @@ class PCT_Planner {
 			'best_time'     => __( 'Best time of day', 'personalized-city-tour' ),
 			'duration_gt'   => __( 'Duration longer than (minutes)', 'personalized-city-tour' ),
 			'duration_lt'   => __( 'Duration shorter than (minutes)', 'personalized-city-tour' ),
+			'location_status' => __( 'Location status (verified / needs enrichment)', 'personalized-city-tour' ),
+			'channel_source' => __( 'City Channel source host', 'personalized-city-tour' ),
+			'channel_virtual' => __( 'City Channel discovery (1/0)', 'personalized-city-tour' ),
 		);
 	}
 
@@ -61,8 +64,18 @@ class PCT_Planner {
 			'weights' => array(
 				'distance_penalty' => 1.5,
 				'variety_penalty'  => 1.5,
-				'event_bonus'      => 2,
-				'max_distance_km'  => 8,
+				'max_distance_km'             => 8,
+				'interest_focus_weight'        => 1.00,
+				'secondary_interest_weight'    => 0.72,
+				'event_bonus'                 => 2,
+				'event_relevance_bonus'       => 2,
+				'mymap_bonus'                 => 5,
+				'channel_freshness_bonus'     => 1.5,
+				'source_diversity_bonus'      => 1.5,
+				'location_verified_bonus'     => 1.5,
+				'serendipity_bonus'           => 1,
+				'time_fit_bonus'              => 1.5,
+				'route_compactness_penalty'   => 1.0,
 			),
 			'constraints' => array(
 				'day_start'          => '09:00',
@@ -71,6 +84,12 @@ class PCT_Planner {
 				'require_accessible' => 0,
 			),
 			'rules' => array(),
+			'strategy' => array(
+				'interest_rotation' => 1,
+				'require_event' => 1,
+				'require_mymap' => 1,
+				'max_stops_per_proposal' => 18,
+			),
 		);
 	}
 
@@ -80,6 +99,11 @@ class PCT_Planner {
 		$conf['weights']     = wp_parse_args( (array) $conf['weights'], self::defaults()['weights'] );
 		$conf['constraints'] = wp_parse_args( (array) $conf['constraints'], self::defaults()['constraints'] );
 		$conf['rules']       = array_values( (array) $conf['rules'] );
+		$conf['strategy']    = wp_parse_args( (array) ( $conf['strategy'] ?? array() ), self::defaults()['strategy'] );
+		$conf['strategy']['interest_rotation'] = empty( $conf['strategy']['interest_rotation'] ) ? 0 : 1;
+		$conf['strategy']['require_event'] = empty( $conf['strategy']['require_event'] ) ? 0 : 1;
+		$conf['strategy']['require_mymap'] = empty( $conf['strategy']['require_mymap'] ) ? 0 : 1;
+		$conf['strategy']['max_stops_per_proposal'] = max( 3, min( 18, absint( $conf['strategy']['max_stops_per_proposal'] ) ) );
 		usort(
 			$conf['rules'],
 			function ( $a, $b ) {
@@ -92,7 +116,7 @@ class PCT_Planner {
 	public static function sanitize( array $input ) {
 		$d   = self::defaults();
 		$out = $d;
-		foreach ( array( 'distance_penalty', 'variety_penalty', 'event_bonus', 'max_distance_km' ) as $k ) {
+		foreach ( array( 'distance_penalty', 'variety_penalty', 'event_bonus', 'max_distance_km', 'interest_focus_weight', 'secondary_interest_weight', 'event_relevance_bonus', 'mymap_bonus', 'channel_freshness_bonus', 'source_diversity_bonus', 'location_verified_bonus', 'serendipity_bonus', 'time_fit_bonus', 'route_compactness_penalty' ) as $k ) {
 			$out['weights'][ $k ] = max( 0, min( 100, (float) ( $input['weights'][ $k ] ?? $d['weights'][ $k ] ) ) );
 		}
 		$time = function ( $v, $fallback ) {
@@ -156,6 +180,10 @@ class PCT_Planner {
 			);
 		}
 		$out['rules'] = $rules;
+		$out['strategy']['interest_rotation'] = empty( $input['strategy']['interest_rotation'] ) ? 0 : 1;
+		$out['strategy']['require_event'] = empty( $input['strategy']['require_event'] ) ? 0 : 1;
+		$out['strategy']['require_mymap'] = empty( $input['strategy']['require_mymap'] ) ? 0 : 1;
+		$out['strategy']['max_stops_per_proposal'] = max( 3, min( 18, absint( $input['strategy']['max_stops_per_proposal'] ?? 18 ) ) );
 		return $out;
 	}
 
@@ -248,6 +276,14 @@ class PCT_Planner {
 				return (int) $item['duration'] > (int) $value;
 			case 'duration_lt':
 				return (int) $item['duration'] > 0 && (int) $item['duration'] < (int) $value;
+			case 'location_status':
+				return (string) ( $item['location_status'] ?? '' ) === $value;
+			case 'channel_source':
+				$url = (string) ( $item['channel_source_url'] ?? '' );
+				$host = wp_parse_url( $url, PHP_URL_HOST );
+				return $host ? ( 0 === strcasecmp( (string) $host, $value ) ) : false;
+			case 'channel_virtual':
+				return ! empty( $item['channel_virtual'] ) === ( '1' === $value || 'yes' === strtolower( $value ) );
 		}
 		return false;
 	}
@@ -326,6 +362,10 @@ class PCT_Planner {
 		$conf  = self::get();
 		$lines = array(
 			sprintf( 'Schedule stops between %s and %s.', $conf['constraints']['day_start'], $conf['constraints']['day_end'] ),
+			sprintf( 'Use at most %d stops per proposal.', (int) $conf['strategy']['max_stops_per_proposal'] ),
+			$conf['strategy']['interest_rotation'] ? "Rotate the traveller's ranked interests across proposals: proposal 1 focuses on interest 1, proposal 2 on interest 2, and so on cyclically." : 'Do not force cyclic interest rotation.',
+			$conf['strategy']['require_event'] ? 'Include a compatible date-matched Event in each proposal when one exists.' : 'Events are optional even when available.',
+			$conf['strategy']['require_mymap'] ? 'Include a compatible curated Google My Maps point/route in each proposal when one exists.' : 'Curated Google My Maps points/routes are optional.',
 		);
 		if ( $conf['constraints']['max_price_tier'] ) {
 			$lines[] = 'Never suggest items above price tier "' . $conf['constraints']['max_price_tier'] . '".';
@@ -396,6 +436,18 @@ class PCT_Planner {
 					if ( ! $item ) {
 						continue; // Unknown id: never invented places.
 					}
+					// A locationless City Channel discovery is not a physical route stop.
+					// Preserve a current Event as Serendipity so useful discoveries are not lost.
+					if ( ! empty( $item['channel_virtual'] ) && ( empty( $item['lat'] ) || empty( $item['lng'] ) ) ) {
+						if ( 'event' === ( $item['type'] ?? '' ) && ! empty( $item['start'] ) ) {
+							$day['serendipity'][] = array(
+								'item_id' => $id,
+								'note' => __( 'Found through a configured City Channel. The event is date-matched, but its venue/location is not verified yet; confirm before visiting.', 'personalized-city-tour' ),
+								'reason' => 'current_city_channel_event_without_verified_location',
+							);
+						}
+						continue;
+					}
 					$drop = false;
 					foreach ( $excluded as $a ) {
 						if ( self::item_matches_target( $item, $a['target'], $a['value'] ) ) {
@@ -417,6 +469,21 @@ class PCT_Planner {
 				}
 				$day[ $list ] = $kept;
 			}
+			$serendipity = array();
+			foreach ( (array) ( $day['serendipity'] ?? array() ) as $row ) {
+				if ( ! is_array( $row ) ) { continue; }
+				$id = (int) ( $row['item_id'] ?? 0 );
+				if ( $id && isset( $by_id[$id] ) ) {
+					$drop = false;
+					foreach ( $excluded as $a ) {
+						if ( self::item_matches_target( $by_id[$id], $a['target'], $a['value'] ) ) { $drop = true; break; }
+					}
+					if ( ! $drop ) {
+						$serendipity[] = array( 'item_id' => $id, 'note' => sanitize_textarea_field( (string) ( $row['note'] ?? '' ) ), 'reason' => sanitize_text_field( (string) ( $row['reason'] ?? '' ) ) );
+					}
+				}
+			}
+			$day['serendipity'] = array_slice( $serendipity, 0, 2 );
 		}
 		unset( $day );
 		return $result;

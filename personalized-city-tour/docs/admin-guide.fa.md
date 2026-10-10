@@ -37,7 +37,7 @@
 ### یکپارچه‌سازی هوش مصنوعی
 * **ارائه‌دهنده**: هیچ · Devin.ai · OpenAI · Azure OpenAI · Anthropic · نقطهٴ اتصال سفارشی سازگار با OpenAI.
 * **مدل / Deployment**: از نگاشت هر ارائه‌دهنده انتخاب کنید یا نام مدل را دستی بنویسید.
-* **کلید API**: به‌صورت رمزشده ذخیره می‌شود. یا ثابت‌ها را در `wp-config.php` تعریف کنید: `PCT_AI_API_KEY`, `PCT_GOOGLE_MAPS_API_KEY`, `PCT_MAPBOX_TOKEN`, `PCT_TRANSLATION_API_KEY`, `PCT_DRIVE_CLIENT_SECRET`, `PCT_SMS_API_KEY`, `PCT_IMAGE_API_KEY`. ثابت‌ها اولویت دارند و هرگز نمایش داده نمی‌شوند.
+* **کلید API**: به‌صورت رمزشده ذخیره می‌شود. یا ثابت‌ها را در `wp-config.php` تعریف کنید: `PCT_AI_API_KEY`, `PCT_GOOGLE_MAPS_API_KEY`, `PCT_MAPBOX_TOKEN`, `PCT_TRANSLATION_API_KEY`, `PCT_DRIVE_CLIENT_SECRET`, `PCT_SMS_API_KEY`, `PCT_IMAGE_API_KEY`, `PCT_IMAGE_HF_API_KEY`, `PCT_IMAGE_GEMINI_API_KEY`, `PCT_IMAGE_HIGGSFIELD_KEY_ID`, `PCT_IMAGE_HIGGSFIELD_KEY_SECRET`. ثابت‌ها اولویت دارند و هرگز نمایش داده نمی‌شوند.
 * **ارسال پایگاه دادهٴ شهر به AI** – رضایت صریح مدیر. تا خاموش است، برنامه‌ریز داخلی پاسخ می‌دهد.
 * **فیلدهای مجاز** – فقط فیلدهای تیک‌خورده ارسال می‌شوند (اطلاعات تماس به‌طور پیش‌فرض ارسال نمی‌شود). اشتراک نام/تماس مسافر جداگانه است.
 * **سطح گزارش**: هیچ · حداقلی · کامل (با پاک‌سازی ایمیل/تلفن/کلید). مدت نگهداری و دکمهٴ پاک‌سازی.

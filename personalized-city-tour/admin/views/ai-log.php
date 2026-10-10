@@ -10,6 +10,8 @@ $page_url = admin_url( 'admin.php?page=pct-ai-log' );
 $kinds    = array(
 	''         => __( 'All kinds', 'personalized-city-tour' ),
 	'tour'     => __( 'Tour generation', 'personalized-city-tour' ),
+	'channel'  => __( 'City Channel research', 'personalized-city-tour' ),
+	'routing'  => __( 'Routing & map services', 'personalized-city-tour' ),
 	'analysis' => __( 'Analytics', 'personalized-city-tour' ),
 	'image'    => __( 'Image generation', 'personalized-city-tour' ),
 	'translate' => __( 'Translation', 'personalized-city-tour' ),
@@ -22,6 +24,7 @@ $statuses = array(
 	'invalid' => __( 'Invalid JSON / schema', 'personalized-city-tour' ),
 	'error'   => __( 'Error', 'personalized-city-tour' ),
 	'info'    => __( 'Info', 'personalized-city-tour' ),
+	'cached'  => __( 'Cache hit', 'personalized-city-tour' ),
 );
 $level = PCT_AI_Log::level();
 ?>
@@ -63,18 +66,18 @@ $level = PCT_AI_Log::level();
 			<?php if ( $entry['error'] ) : ?><h3><?php esc_html_e( 'Error / validation', 'personalized-city-tour' ); ?></h3><pre><?php echo esc_html( $entry['error'] ); ?></pre><?php endif; ?>
 			<?php if ( null !== $entry['request'] && '' !== $entry['request'] ) : ?><h3><?php esc_html_e( 'Request', 'personalized-city-tour' ); ?></h3><pre><?php echo esc_html( $entry['request'] ); ?></pre><?php endif; ?>
 			<?php if ( null !== $entry['response'] && '' !== $entry['response'] ) : ?><h3><?php esc_html_e( 'Response', 'personalized-city-tour' ); ?></h3><pre><?php echo esc_html( $entry['response'] ); ?></pre><?php endif; ?>
-			<?php if ( 'full' !== $level && 'audit' !== $entry['kind'] ) : ?><p class="description"><?php esc_html_e( 'Prompts and responses are only stored at the “Full” logging level.', 'personalized-city-tour' ); ?></p><?php endif; ?>
+			<?php if ( 'full' !== $level && 'audit' !== $entry['kind'] && 'channel' !== $entry['kind'] ) : ?><p class="description"><?php esc_html_e( 'Prompts and responses are only stored at the “Full” logging level.', 'personalized-city-tour' ); ?></p><?php endif; ?>
 			<a href="<?php echo esc_url( $page_url ); ?>" class="button"><?php esc_html_e( 'Back to list', 'personalized-city-tour' ); ?></a>
 		</div>
 	<?php endif; ?>
 
 	<table class="widefat striped">
 		<thead><tr>
-			<th>#</th><th><?php esc_html_e( 'Time', 'personalized-city-tour' ); ?></th><th><?php esc_html_e( 'Kind', 'personalized-city-tour' ); ?></th><th><?php esc_html_e( 'Provider / model', 'personalized-city-tour' ); ?></th><th><?php esc_html_e( 'Status', 'personalized-city-tour' ); ?></th><th><?php esc_html_e( 'Duration', 'personalized-city-tour' ); ?></th><th><?php esc_html_e( 'Title', 'personalized-city-tour' ); ?></th><th><?php esc_html_e( 'Error', 'personalized-city-tour' ); ?></th>
+			<th>#</th><th><?php esc_html_e( 'Time', 'personalized-city-tour' ); ?></th><th><?php esc_html_e( 'Kind', 'personalized-city-tour' ); ?></th><th><?php esc_html_e( 'Provider / model', 'personalized-city-tour' ); ?></th><th><?php esc_html_e( 'Status', 'personalized-city-tour' ); ?></th><th><?php esc_html_e( 'Duration', 'personalized-city-tour' ); ?></th><th><?php esc_html_e( 'Title', 'personalized-city-tour' ); ?></th><th><?php esc_html_e( 'Coverage', 'personalized-city-tour' ); ?></th><th><?php esc_html_e( 'Error', 'personalized-city-tour' ); ?></th>
 		</tr></thead>
 		<tbody>
 		<?php if ( ! $log['rows'] ) : ?>
-			<tr><td colspan="8"><?php esc_html_e( 'No entries.', 'personalized-city-tour' ); ?></td></tr>
+			<tr><td colspan="9"><?php esc_html_e( 'No entries.', 'personalized-city-tour' ); ?></td></tr>
 		<?php endif; ?>
 		<?php foreach ( $log['rows'] as $row ) : ?>
 			<tr>
@@ -85,6 +88,22 @@ $level = PCT_AI_Log::level();
 				<td><span class="pct-status pct-status-<?php echo esc_attr( $row['status'] ); ?>"><?php echo esc_html( $statuses[ $row['status'] ] ?? $row['status'] ); ?></span></td>
 				<td><?php echo $row['duration_ms'] ? esc_html( $row['duration_ms'] . ' ms' ) : '–'; ?></td>
 				<td><?php echo esc_html( $row['title'] ); ?></td>
+				<td><?php
+					$coverage = '';
+					if ( 'channel' === $row['kind'] && ! empty( $row['response'] ) ) {
+						$rr = json_decode( (string) $row['response'], true );
+						$accepted = (int) ( $rr['accepted_candidates'] ?? 0 );
+						$used = (int) ( $rr['proposals_with_city_channel'] ?? 0 );
+						$route_ready = (int) ( $rr['route_ready_candidates'] ?? 0 );
+						$rejected = (int) ( $rr['rejected_candidates'] ?? 0 );
+						$research = count( (array) ( $rr['channel_research'] ?? array() ) );
+						$src_rows = (array) ( $rr['sources'] ?? array() );
+						$src = count( $src_rows );
+						$raw = 0; foreach ( $src_rows as $sr ) { $raw += (int) ( $sr['raw_candidates'] ?? 0 ); }
+						$coverage = sprintf( __( '%1$d accepted · %2$d raw · %3$d sources · %4$d researched · %5$d route-ready · %6$d rejected · %7$d used', 'personalized-city-tour' ), $accepted, $raw, $src, $research, $route_ready, $rejected, $used );
+					}
+					echo esc_html( $coverage ?: '–' );
+				?></td>
 				<td><small><?php echo esc_html( mb_substr( (string) $row['error'], 0, 120 ) ); ?></small></td>
 			</tr>
 		<?php endforeach; ?>

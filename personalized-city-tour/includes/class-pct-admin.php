@@ -21,6 +21,7 @@ class PCT_Admin {
 		add_action( 'restrict_manage_posts', array( __CLASS__, 'city_filter_dropdown' ) );
 		add_action( 'admin_post_pct_set_active_city', array( __CLASS__, 'handle_set_active_city' ) );
 		add_action( 'admin_post_pct_purge_log', array( __CLASS__, 'handle_purge_log' ) );
+		add_action( 'admin_post_pct_refresh_mymaps', array( __CLASS__, 'handle_refresh_mymaps' ) );
 
 		foreach ( array( PCT_Post_Types::PLACE, PCT_Post_Types::EVENT ) as $type ) {
 			add_filter( "manage_{$type}_posts_columns", array( __CLASS__, 'columns' ) );
@@ -127,6 +128,22 @@ class PCT_Admin {
 			wp_enqueue_script( 'pct-admin-map', PCT_URL . 'admin/js/map-picker.js', array( 'pct-leaflet' ), PCT_VERSION, true );
 			wp_localize_script( 'pct-admin-map', 'pctMap', PCT_Maps::client_config() );
 		}
+		if ( false !== strpos( $hook, 'pct-vibe' ) ) {
+			wp_enqueue_script( 'pct-admin-push', PCT_URL . 'admin/js/push.js', array(), PCT_VERSION, true );
+			$push_config = PCT_Push::config();
+			$push_config['i18n'] = array(
+				'unsupported' => __( 'Browser push notifications are not supported on this device/browser.', 'personalized-city-tour' ),
+				'blocked'     => __( 'Browser notification permission is blocked. Allow notifications for this site in the browser settings.', 'personalized-city-tour' ),
+				'enabled'     => __( 'Notifications are enabled on this device.', 'personalized-city-tour' ),
+				'disabled'    => __( 'Notifications are not enabled on this device.', 'personalized-city-tour' ),
+				'swError'     => __( 'Could not register the notification service worker.', 'personalized-city-tour' ),
+				'disableError'=> __( 'Could not disable notifications.', 'personalized-city-tour' ),
+				'permission'  => __( 'Notification permission was not granted.', 'personalized-city-tour' ),
+				'enableError' => __( 'Could not enable browser notifications.', 'personalized-city-tour' ),
+			);
+			wp_localize_script( 'pct-admin-push', 'pctPushAdmin', $push_config );
+		}
+
 		if ( false !== strpos( $hook, 'pct-form-builder' ) ) {
 			wp_enqueue_script( 'pct-form-builder', PCT_URL . 'admin/js/form-builder.js', array( 'pct-admin' ), PCT_VERSION, true );
 			wp_localize_script(
@@ -449,7 +466,7 @@ class PCT_Admin {
 			'drive_disconnected' => __( 'Google Drive disconnected.', 'personalized-city-tour' ),
 			'drive_exported'     => __( 'Exports finished.', 'personalized-city-tour' ),
 			'drive_partial'      => __( 'Some exports failed — see the Drive log below.', 'personalized-city-tour' ),
-			'drive_error'        => __( 'Google Drive authorisation failed.', 'personalized-city-tour' ),
+			'drive_error'        => __( 'Google Drive authorisation failed — see the Drive log below for the exact error.', 'personalized-city-tour' ),
 			'bundle_saved'       => __( 'Language bundle saved.', 'personalized-city-tour' ),
 			'bundle_deleted'     => __( 'Uploaded bundle removed.', 'personalized-city-tour' ),
 			'bundle_error'       => __( 'The uploaded file could not be read (expected .json or .po).', 'personalized-city-tour' ),
@@ -491,11 +508,33 @@ class PCT_Admin {
 
 	public static function render_vibe() {
 		$vibe     = PCT_Vibe::settings();
-		$requests = PCT_Vibe::all();
+		$requests = PCT_Vibe::all( max( 5, min( 200, (int) $vibe['requests_per_page'] ) ) );
 		$statuses = PCT_Vibe::statuses();
-		$outbox   = PCT_SMS::outbox();
+		$outbox   = array_slice( PCT_SMS::outbox(), 0, max( 5, min( 200, (int) $vibe['outbox_per_page'] ) ) );
 		$msg      = isset( $_GET['pct_msg'] ) ? sanitize_key( $_GET['pct_msg'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
 		include PCT_DIR . 'admin/views/vibe.php';
+	}
+
+	public static function handle_refresh_mymaps() {
+		check_admin_referer( 'pct_refresh_mymaps' );
+		if ( ! current_user_can( 'pct_manage' ) ) {
+			wp_die( esc_html__( 'Not allowed.', 'personalized-city-tour' ) );
+		}
+		$city_id = absint( $_POST['city_id'] ?? 0 );
+		$results = $city_id ? PCT_Data::refresh_mymap_cache( $city_id ) : array();
+		$ok = 0;
+		foreach ( $results as $row ) {
+			if ( in_array( $row['status'] ?? '', array( 'ok', 'cached_fallback' ), true ) ) {
+				$ok++;
+			}
+		}
+		PCT_Tour_Generator::flush_cache();
+		$report_key = 'pct_mymap_report_' . get_current_user_id() . '_' . $city_id;
+		set_transient( $report_key, array( 'results' => $results, 'ok' => $ok, 'total' => count( $results ), 'time' => time() ), 5 * MINUTE_IN_SECONDS );
+		$url = $city_id ? admin_url( 'post.php?post=' . $city_id . '&action=edit' ) : admin_url( 'edit.php?post_type=' . PCT_Post_Types::CITY );
+		$url = add_query_arg( 'pct_mymap_refresh', '1', $url );
+		wp_safe_redirect( $url );
+		exit;
 	}
 
 	public static function render_ai_log() {

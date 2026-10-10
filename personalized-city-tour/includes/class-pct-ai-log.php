@@ -84,7 +84,7 @@ class PCT_AI_Log {
 			'request'     => null,
 			'response'    => null,
 		);
-		if ( 'full' === $level ) {
+		if ( 'full' === $level || ! empty( $entry['force_full'] ) ) {
 			$req = isset( $entry['request'] ) ? ( is_string( $entry['request'] ) ? $entry['request'] : wp_json_encode( $entry['request'], JSON_UNESCAPED_UNICODE ) ) : '';
 			$res = isset( $entry['response'] ) ? ( is_string( $entry['response'] ) ? $entry['response'] : wp_json_encode( $entry['response'], JSON_UNESCAPED_UNICODE ) ) : '';
 			$row['request']  = $redact ? self::redact( $req ) : $req;
@@ -161,7 +161,7 @@ class PCT_AI_Log {
 	public static function stats( $days = 30 ) {
 		global $wpdb;
 		$since = gmdate( 'Y-m-d H:i:s', time() - $days * DAY_IN_SECONDS );
-		$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT status, COUNT(*) AS n, AVG(duration_ms) AS avg_ms FROM ' . self::table() . " WHERE created >= %s AND kind <> 'audit' GROUP BY status", $since ), ARRAY_A ); // phpcs:ignore WordPress.DB
+		$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT status, COUNT(*) AS n, AVG(duration_ms) AS avg_ms FROM ' . self::table() . " WHERE created >= %s AND kind NOT IN ('audit','channel') GROUP BY status", $since ), ARRAY_A ); // phpcs:ignore WordPress.DB
 		$out   = array( 'ok' => 0, 'error' => 0, 'invalid' => 0, 'avg_ms' => 0 );
 		$total = 0;
 		$sum   = 0;

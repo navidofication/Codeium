@@ -23,6 +23,9 @@ class PCT_Rest {
 	public static function apply_language( $result, $server, $request ) {
 		if ( 0 === strpos( (string) $request->get_route(), '/' . self::NS ) ) {
 			self::$request = $request;
+			// PCT public REST calls are intentionally usable by anonymous visitors.
+			// Never let page/REST caches serve a stale cookie-auth nonce or response.
+			nocache_headers();
 			$lang = $request->get_param( 'pct_lang' );
 			if ( ! $lang ) {
 				$lang = $request->get_header( 'x-pct-lang' );
@@ -123,6 +126,11 @@ class PCT_Rest {
 			'methods'             => 'POST',
 			'callback'            => array( __CLASS__, 'vibe_otp' ),
 			'permission_callback' => array( __CLASS__, 'visitor_permission' ),
+		) );
+		register_rest_route( self::NS, '/vibe/push/subscribe', array(
+			'methods' => array( 'GET', 'POST', 'DELETE' ),
+			'callback' => array( __CLASS__, 'vibe_push_subscribe' ),
+			'permission_callback' => array( __CLASS__, 'push_permission' ),
 		) );
 		register_rest_route( self::NS, '/vibe/otp/verify', array(
 			'methods'             => 'POST',
@@ -307,6 +315,8 @@ class PCT_Rest {
 				'mymaps'    => $public ? $c['mymaps'] : array(),
 				'channels'  => $c['channels'],
 				'gmaps_url' => $c['gmaps_url'],
+				'ar_url'    => $c['ar_url'],
+				'ar_label'  => $c['ar_label'],
 			);
 		}
 		return rest_ensure_response( $out );
@@ -332,9 +342,9 @@ class PCT_Rest {
 				'categories'    => self::categories(),
 				'vibe'          => PCT_Vibe::enabled() ? array(
 					'fee'      => PCT_Vibe::settings()['fee_text'],
-					'vibes'    => PCT_Vibe::options_list( 'vibes' ),
-					'styles'   => PCT_Vibe::options_list( 'styles' ),
-					'subjects' => PCT_Vibe::options_list( 'subjects' ),
+					'vibes'    => PCT_Vibe::localized_options( 'vibes', $lang ),
+					'styles'   => PCT_Vibe::localized_options( 'styles', $lang ),
+					'subjects' => PCT_Vibe::localized_options( 'subjects', $lang ),
 				) : null,
 			)
 		);
@@ -378,10 +388,17 @@ class PCT_Rest {
 		if ( count( $points ) < 2 ) {
 			return new WP_Error( 'pct_invalid', __( 'At least two points are required.', 'personalized-city-tour' ), array( 'status' => 400 ) );
 		}
-		$mode = in_array( $request->get_param( 'mode' ), array( 'walking', 'bicycling', 'driving', 'transit' ), true ) ? $request->get_param( 'mode' ) : 'walking';
+		$mode = PCT_Maps::normalize_travel_mode( $request->get_param( 'mode' ) );
+		if ( '' === $mode ) {
+			return new WP_Error( 'pct_route_mode_unsupported', __( 'This travel mode is not supported by the configured routing integration.', 'personalized-city-tour' ), array( 'status' => 422 ) );
+		}
 		$res  = PCT_Maps::route( $points, $mode );
 		if ( is_wp_error( $res ) ) {
-			$res->add_data( array( 'status' => 502 ) );
+			$data = (array) $res->get_error_data();
+			if ( empty( $data['status'] ) ) {
+				$data['status'] = 502;
+			}
+			$res->add_data( $data );
 			return $res;
 		}
 		return rest_ensure_response( $res );
@@ -400,16 +417,32 @@ class PCT_Rest {
 			$form->add_data( array_merge( (array) $form->get_error_data(), array( 'status' => 400 ) ) );
 			return $form;
 		}
+		$saved = array( 'id' => 0, 'token' => '', 'url' => '' );
+		if ( PCT_Settings::get( 'store_submissions' ) ) {
+			// Persist the validated form BEFORE the AI call. This is the authoritative
+			// submission record and also becomes part of the next forms export.
+			$pre = PCT_Tours::save_form_submission( $city_id, $form );
+			if ( ! is_wp_error( $pre ) ) {
+				$saved = $pre;
+			}
+		}
 		$result = PCT_Tour_Generator::generate( $city_id, $form, array( 'lang' => PCT_I18n::current() ) );
 		if ( is_wp_error( $result ) ) {
 			$result->add_data( array( 'status' => 422 ) );
+			if ( $saved['id'] ) {
+				// Keep the form even when AI fails, so it is not lost.
+				PCT_Drive::queue_exports( array( 'forms' ) );
+			}
 			return $result;
 		}
-		$saved = array( 'id' => 0, 'token' => '', 'url' => '' );
-		if ( PCT_Settings::get( 'store_submissions' ) ) {
-			$saved = PCT_Tours::save( $city_id, $form, $result );
-			if ( is_wp_error( $saved ) ) {
-				$saved = array( 'id' => 0, 'token' => '', 'url' => '' );
+		if ( $saved['id'] ) {
+			$saved['url'] = PCT_Tours::attach_result( $saved['id'], $result, $form );
+			PCT_Drive::queue_exports( array( 'forms', 'tours' ) );
+		} elseif ( PCT_Settings::get( 'store_submissions' ) ) {
+			// Rare database-write failure: fall back to the legacy atomic save.
+			$legacy = PCT_Tours::save( $city_id, $form, $result );
+			if ( ! is_wp_error( $legacy ) ) {
+				$saved = $legacy;
 			}
 		}
 		do_action( 'pct_tour_created', $saved['id'], $form, $result );
@@ -699,6 +732,27 @@ class PCT_Rest {
 		return is_wp_error( $out ) ? $out : rest_ensure_response( $out );
 	}
 
+	public static function push_permission() {
+		if ( ! is_user_logged_in() || ! current_user_can( 'pct_manage' ) ) {
+			return new WP_Error( 'pct_push_forbidden', __( 'Only an administrator can enable browser notifications.', 'personalized-city-tour' ), array( 'status' => 403 ) );
+		}
+		return true;
+	}
+
+	public static function vibe_push_subscribe( WP_REST_Request $request ) {
+		if ( ! is_user_logged_in() || ! current_user_can( 'pct_manage' ) ) {
+			return new WP_Error( 'pct_push_forbidden', __( 'Only an administrator can enable browser notifications.', 'personalized-city-tour' ), array( 'status' => 403 ) );
+		}
+		if ( 'GET' === $request->get_method() ) {
+			$subs = get_user_meta( get_current_user_id(), PCT_Push::META_KEY, true );
+			return rest_ensure_response( array( 'count' => is_array( $subs ) ? count( $subs ) : 0 ) );
+		}
+		if ( 'DELETE' === $request->get_method() ) {
+			return rest_ensure_response( PCT_Push::unsubscribe( get_current_user_id(), $request->get_param( 'endpoint' ) ) );
+		}
+		return rest_ensure_response( PCT_Push::subscribe( get_current_user_id(), $request->get_json_params() ) );
+	}
+
 	public static function vibe_otp_verify( WP_REST_Request $request ) {
 		$limit = self::rate_limit( 'otp_verify', 15, 15 * MINUTE_IN_SECONDS );
 		if ( is_wp_error( $limit ) ) {
@@ -708,23 +762,37 @@ class PCT_Rest {
 		return is_wp_error( $out ) ? $out : rest_ensure_response( $out );
 	}
 
-	private static function vibe_visitor( WP_REST_Request $request ) {
+	private static function vibe_token( WP_REST_Request $request ) {
 		$token = (string) $request->get_header( 'x-pct-visitor' );
 		if ( '' === $token ) {
 			$token = (string) $request->get_param( 'visitor_token' );
 		}
-		$mobile = PCT_Vibe::visitor_mobile( $token );
+		return $token;
+	}
+
+	private static function vibe_visitor( WP_REST_Request $request ) {
+		$mobile = PCT_Vibe::visitor_mobile( self::vibe_token( $request ) );
 		if ( '' === $mobile ) {
 			return new WP_Error( 'pct_otp_required', __( 'Please verify your mobile number first.', 'personalized-city-tour' ), array( 'status' => 401 ) );
 		}
 		return $mobile;
 	}
 
-	public static function vibe_create( WP_REST_Request $request ) {
-		$mobile = self::vibe_visitor( $request );
-		if ( is_wp_error( $mobile ) ) {
-			return $mobile;
+	private static function vibe_create_visitor( WP_REST_Request $request ) {
+		$token = self::vibe_token( $request );
+		$mobile = PCT_Vibe::visitor_mobile( $token );
+		if ( '' === $mobile || ! PCT_Vibe::visitor_token_can_create( $token ) ) {
+			return new WP_Error( 'pct_otp_required', __( 'Please request and verify a new OTP before creating another image.', 'personalized-city-tour' ), array( 'status' => 401 ) );
 		}
+		return array( 'mobile' => $mobile, 'token' => $token );
+	}
+
+	public static function vibe_create( WP_REST_Request $request ) {
+		$visitor = self::vibe_create_visitor( $request );
+		if ( is_wp_error( $visitor ) ) {
+			return $visitor;
+		}
+		$mobile = $visitor['mobile'];
 		$limit = self::rate_limit( 'vibe', 5, HOUR_IN_SECONDS );
 		if ( is_wp_error( $limit ) ) {
 			return $limit;
@@ -746,6 +814,10 @@ class PCT_Rest {
 		if ( is_wp_error( $r ) ) {
 			return $r;
 		}
+		// A verified OTP authorises exactly one new image request. Keep the
+		// visitor token alive for viewing that request, but consume its
+		// creation permission so a second image requires a fresh OTP.
+		PCT_Vibe::consume_visitor_token( $visitor['token'] );
 		return rest_ensure_response( PCT_Vibe::public_view( $r ) );
 	}
 

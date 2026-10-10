@@ -56,6 +56,13 @@ if ( $token ) {
 			<?php if ( ! empty( $day['alternatives'] ) ) : ?>
 				<p class="pct-muted"><?php esc_html_e( 'Alternatives:', 'personalized-city-tour' ); ?> <?php echo esc_html( implode( ', ', wp_list_pluck( $day['alternatives'], 'name' ) ) ); ?></p>
 			<?php endif; ?>
+			<?php if ( ! empty( $day['serendipity'] ) ) : ?>
+				<div class="pct-panel"><strong><?php esc_html_e( 'Serendipity discoveries', 'personalized-city-tour' ); ?></strong>
+				<?php foreach ( (array) $day['serendipity'] as $ser ) : ?>
+					<p><a href="<?php echo esc_url( $ser['link'] ?? '' ); ?>" target="_blank" rel="noopener"><?php echo esc_html( $ser['name'] ); ?></a> — <?php echo esc_html( $ser['note'] ); ?></p>
+				<?php endforeach; ?>
+				</div>
+			<?php endif; ?>
 			<?php if ( ! empty( $day['accessibility_notes'] ) ) : ?>
 				<p><strong><?php esc_html_e( 'Accessibility:', 'personalized-city-tour' ); ?></strong> <?php echo esc_html( $day['accessibility_notes'] ); ?></p>
 			<?php endif; ?>

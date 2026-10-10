@@ -37,7 +37,7 @@ English is the source language and Persian ships as a complete built-in bundle (
 ### AI Integration
 * **Provider**: none · Devin.ai · OpenAI · Azure OpenAI · Anthropic · custom OpenAI-compatible endpoint.
 * **Model / deployment**: pick from the per-provider mapping or type a custom model name. Azure uses the deployment name.
-* **API key**: stored encrypted (AES-256-CBC with `PCT_SECRET_KEY` or the site salts). Alternatively define constants in `wp-config.php`: `PCT_AI_API_KEY`, `PCT_GOOGLE_MAPS_API_KEY`, `PCT_MAPBOX_TOKEN`, `PCT_TRANSLATION_API_KEY`, `PCT_DRIVE_CLIENT_SECRET`, `PCT_SMS_API_KEY`, `PCT_IMAGE_API_KEY`. Constants win over stored values and are never shown.
+* **API key**: stored encrypted (AES-256-CBC with `PCT_SECRET_KEY` or the site salts). Alternatively define constants in `wp-config.php`: `PCT_AI_API_KEY`, `PCT_GOOGLE_MAPS_API_KEY`, `PCT_MAPBOX_TOKEN`, `PCT_TRANSLATION_API_KEY`, `PCT_DRIVE_CLIENT_SECRET`, `PCT_SMS_API_KEY`, `PCT_IMAGE_API_KEY`, `PCT_IMAGE_HF_API_KEY`, `PCT_IMAGE_GEMINI_API_KEY`, `PCT_IMAGE_HIGGSFIELD_KEY_ID`, `PCT_IMAGE_HIGGSFIELD_KEY_SECRET`. Constants win over stored values and are never shown.
 * **Send city database to AI** – explicit consent. While off, the built-in planner answers every request.
 * **Allowed city-data fields** – only the ticked fields are sent (contact fields excluded by default). **Share traveller name / contact** are separate opt-ins.
 * **Logging level**: none · minimal (metadata + redacted title) · full (redacted request/response). Retention in days; purge button.

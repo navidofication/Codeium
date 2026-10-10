@@ -9,6 +9,73 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class PCT_Tours {
 
+	/**
+	 * Persist the validated traveller form before AI generation. This guarantees
+	 * that a slow/failed AI request never loses the original submission.
+	 */
+	public static function save_form_submission( $city_id, array $form ) {
+		$token = wp_generate_password( 24, false, false );
+		$city  = get_the_title( $city_id );
+		$lang  = PCT_I18n::current();
+		$title = sprintf( 'PCT submission – %s – %s', $city, current_time( 'Y-m-d H:i' ) );
+		$post_id = wp_insert_post(
+			array(
+				'post_type'   => PCT_Post_Types::TOUR,
+				'post_status' => 'private',
+				'post_title'  => $title,
+				'post_author' => get_current_user_id(),
+				'meta_input'  => array(
+					'_pct_city_id'  => (int) $city_id,
+					'_pct_token'    => $token,
+					'_pct_form'     => $form,
+					'_pct_result'   => array(),
+					'_pct_provider' => '',
+					'_pct_lang'     => $lang,
+					'_pct_submission_only' => 1,
+				),
+			),
+			true
+		);
+		if ( is_wp_error( $post_id ) ) {
+			return $post_id;
+		}
+		return array(
+			'id'    => $post_id,
+			'token' => $token,
+			'url'   => self::url( $post_id, $token ),
+		);
+	}
+
+	/**
+	 * Attach the generated result to a previously persisted form submission.
+	 */
+	public static function attach_result( $post_id, array $result, array $form = array() ) {
+		$post_id = absint( $post_id );
+		if ( ! $post_id ) {
+			return false;
+		}
+		update_post_meta( $post_id, '_pct_result', $result );
+		update_post_meta( $post_id, '_pct_provider', $result['provider'] ?? '' );
+		update_post_meta( $post_id, '_pct_lang', $result['lang'] ?? PCT_I18n::current() );
+		delete_post_meta( $post_id, '_pct_submission_only' );
+		$name = isset( $form['name'] ) ? trim( (string) $form['name'] ) : '';
+		$city_id = (int) get_post_meta( $post_id, '_pct_city_id', true );
+		$city = get_the_title( $city_id );
+		$lang = isset( $result['lang'] ) ? $result['lang'] : PCT_I18n::current();
+		$days = isset( $result['days'] ) && is_array( $result['days'] ) ? count( $result['days'] ) : 1;
+		$slug = sanitize_title( $name . $city . 'Day' . max( 1, (int) ceil( $days / 2 ) ) . current_time( 'dmy' ) );
+		$slug = wp_unique_post_slug( $slug, $post_id, 'private', PCT_Post_Types::TOUR, 0 );
+		wp_update_post(
+			array(
+				'ID' => $post_id,
+				'post_title' => implode( ' – ', array_filter( array( $name, strtoupper( $lang ), $city, PCT_I18n::format_date( current_time( 'timestamp' ), $lang, true ) ) ) ),
+				'post_name' => $slug,
+			)
+		);
+		update_post_meta( $post_id, '_pct_slug', $slug );
+		return self::url( $post_id, get_post_meta( $post_id, '_pct_token', true ), $slug );
+	}
+
 	public static function save( $city_id, array $form, array $result ) {
 		$token = wp_generate_password( 24, false, false );
 		$name  = isset( $form['name'] ) ? trim( (string) $form['name'] ) : '';

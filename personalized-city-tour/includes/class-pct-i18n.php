@@ -21,6 +21,8 @@ class PCT_I18n {
 	const COOKIE      = 'pct_lang';
 	const BUNDLES_OPT = 'pct_lang_bundles';
 	const CACHE_OPT   = 'pct_translation_cache';
+	const AI_BUNDLE_OPT = 'pct_ai_ui_bundles';
+	const AI_BUNDLE_LOCK = 'pct_ai_ui_bundle_lock';
 
 	/** @var string|null */
 	private static $current = null;
@@ -59,6 +61,28 @@ class PCT_I18n {
 		add_action( 'admin_post_pct_upload_bundle', array( __CLASS__, 'handle_upload' ) );
 		add_action( 'admin_post_pct_delete_bundle', array( __CLASS__, 'handle_delete' ) );
 		add_action( 'admin_post_pct_admin_lang', array( __CLASS__, 'handle_admin_lang' ) );
+		add_action( 'pct_build_language_bundle', array( __CLASS__, 'build_language_bundle_job' ), 10, 1 );
+	}
+
+
+	/** Schedule complete AI-built bundles for enabled non-Persian languages. */
+	public static function schedule_ai_bundles() {
+		// Deprecated: UI translations are now built-in bundles.
+		return;
+	}
+
+	public static function build_language_bundle_job( $lang ) {
+		// Deprecated: keep the hook for old scheduled events, but never invoke AI.
+		return;
+	}
+
+	public static function translate_ui_text( $text, $lang = null ) {
+		$text = (string) $text;
+		if ( '' === trim( $text ) ) { return $text; }
+		$lang = $lang ? self::normalize( $lang ) : self::current();
+		if ( 'en' === $lang ) { return $text; }
+		$bundle = self::bundle( $lang );
+		return isset( $bundle[ $text ] ) && '' !== trim( (string) $bundle[ $text ] ) ? (string) $bundle[ $text ] : $text;
 	}
 
 	public static function normalize( $code ) {
@@ -175,28 +199,111 @@ class PCT_I18n {
 				$bundle = $decoded;
 			}
 		}
+		$online = get_option( self::CACHE_OPT, array() );
+		if ( isset( $online[ $lang ] ) && is_array( $online[ $lang ] ) ) {
+			$bundle = array_merge( $bundle, $online[ $lang ] );
+		}
+		// Explicitly uploaded translations are authoritative and always win.
 		$uploaded = get_option( self::BUNDLES_OPT, array() );
 		if ( isset( $uploaded[ $lang ] ) && is_array( $uploaded[ $lang ] ) ) {
 			$bundle = array_merge( $bundle, $uploaded[ $lang ] );
-		}
-		$online = get_option( self::CACHE_OPT, array() );
-		if ( isset( $online[ $lang ] ) && is_array( $online[ $lang ] ) ) {
-			$bundle = array_merge( $online[ $lang ], $bundle );
 		}
 		wp_cache_set( $cache_key, $bundle, 'pct', HOUR_IN_SECONDS );
 		return $bundle;
 	}
 
+	/**
+	 * True when a configured non-sandbox AI can be used to fill missing UI translations.
+	 */
+	public static function ai_translation_available() {
+		// UI bundles are shipped as built-in files. Do not call a generative
+		// model for localization at runtime; this keeps the admin audit clean,
+		// makes translations deterministic, and avoids schema/API failures.
+		return false;
+	}
+
+	/**
+	 * Build a complete UI translation bundle from the shipped English source
+	 * keys. The result is cached permanently until the plugin version changes.
+	 */
+	private static function generate_ai_bundle( $lang ) {
+		$lock = get_transient( self::AI_BUNDLE_LOCK . '_' . $lang );
+		if ( $lock ) {
+			return array();
+		}
+		set_transient( self::AI_BUNDLE_LOCK . '_' . $lang, 1, 5 * MINUTE_IN_SECONDS );
+
+		$source_file = PCT_DIR . 'languages/pct-fa.json';
+		$source = file_exists( $source_file ) ? json_decode( (string) file_get_contents( $source_file ), true ) : array(); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		$keys = is_array( $source ) ? array_keys( $source ) : array();
+		if ( empty( $keys ) ) {
+			delete_transient( self::AI_BUNDLE_LOCK . '_' . $lang );
+			return array();
+		}
+		$keys = array_values( array_unique( array_filter( array_map( 'strval', $keys ) ) ) );
+		$bundle = array();
+		$chunks = array_chunk( $keys, 250 );
+		foreach ( $chunks as $chunk ) {
+			$translated = self::ai_translate_batch( $chunk, $lang );
+			if ( is_wp_error( $translated ) ) {
+				break;
+			}
+			foreach ( $chunk as $i => $text ) {
+				if ( isset( $translated[ $i ] ) && is_string( $translated[ $i ] ) && '' !== trim( $translated[ $i ] ) ) {
+					$bundle[ $text ] = $translated[ $i ];
+				}
+			}
+		}
+
+		if ( $bundle ) {
+			$all = get_option( self::AI_BUNDLE_OPT, array() );
+			$all[ $lang ] = array_merge( (array) ( $all[ $lang ] ?? array() ), $bundle );
+			update_option( self::AI_BUNDLE_OPT, $all, false );
+		}
+		delete_transient( self::AI_BUNDLE_LOCK . '_' . $lang );
+		return $bundle;
+	}
+
+	/**
+	 * Translate a batch while preserving placeholders and markup.
+	 */
+	private static function ai_translate_batch( array $texts, $lang ) {
+		if ( ! class_exists( 'PCT_AI' ) || ! self::ai_translation_available() ) {
+			return new WP_Error( 'pct_ai_translation_disabled', 'AI translation is not available.' );
+		}
+		$names = self::languages();
+		$target = isset( $names[ $lang ] ) ? $names[ $lang ]['english'] : $lang;
+		$system = 'You are the UI localization engine for a WordPress plugin. Translate each input string into the requested target language. Return ONLY a JSON array of strings in exactly the same order. Preserve every placeholder such as %s, %d, %1$s, %2$d, HTML tags, ellipses and punctuation tokens exactly; do not translate URLs, variable placeholders, IDs, or code-like fragments. Keep UI wording concise, natural and suitable for buttons, labels, notices and settings.';
+		$user   = 'Target language: ' . $target . "\nTranslate these English source strings, preserving order exactly:\n" . wp_json_encode( array_values( $texts ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+		$result = PCT_AI::complete_json(
+			$system,
+			$user,
+			array(
+				'kind'            => 'ui_translation',
+				'schema'          => array( 'type' => 'array', 'minItems' => count( $texts ), 'maxItems' => count( $texts ), 'items' => array( 'type' => 'string' ) ),
+				'title'           => 'PCT UI translation: ' . $target,
+				'retry'           => true,
+				'skip_rate_limit' => true,
+			)
+		);
+		return is_array( $result ) ? $result : new WP_Error( 'pct_ai_translation_failed', 'AI UI translation failed.' );
+	}
+
 	public static function bundle_stats() {
 		$uploaded = get_option( self::BUNDLES_OPT, array() );
+		$ai       = get_option( self::AI_BUNDLE_OPT, array() );
 		$out      = array();
 		foreach ( self::languages() as $code => $meta ) {
 			$file  = PCT_DIR . 'languages/pct-' . $code . '.json';
-			$built = 0;
+			$built_keys = array();
 			if ( file_exists( $file ) ) {
 				$decoded = json_decode( (string) file_get_contents( $file ), true ); // phpcs:ignore WordPress.WP.AlternativeFunctions
-				$built   = is_array( $decoded ) ? count( $decoded ) : 0;
+				if ( is_array( $decoded ) ) { $built_keys = array_keys( $decoded ); }
 			}
+			if ( isset( $ai[ $code ] ) && is_array( $ai[ $code ] ) ) {
+				$built_keys = array_values( array_unique( array_merge( $built_keys, array_keys( $ai[ $code ] ) ) ) );
+			}
+			$built = count( $built_keys );
 			$out[ $code ] = array(
 				'built_in' => $built,
 				'uploaded' => isset( $uploaded[ $code ] ) ? count( (array) $uploaded[ $code ] ) : 0,
@@ -415,6 +522,8 @@ class PCT_I18n {
 		unset( $all[ $lang ] );
 		update_option( self::BUNDLES_OPT, $all, false );
 		wp_cache_delete( 'pct_bundle_' . $lang . '_' . PCT_VERSION, 'pct' );
+		$ai = get_option( self::AI_BUNDLE_OPT, array() );
+		if ( isset( $ai[ $lang ] ) ) { unset( $ai[ $lang ] ); update_option( self::AI_BUNDLE_OPT, $ai, false ); }
 		wp_safe_redirect( add_query_arg( array( 'page' => 'pct-settings', 'tab' => 'languages', 'pct_msg' => 'bundle_deleted' ), admin_url( 'admin.php' ) ) );
 		exit;
 	}

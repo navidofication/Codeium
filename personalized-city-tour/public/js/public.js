@@ -16,9 +16,16 @@
 		get: function (k) { try { return window.localStorage.getItem('pct_' + k); } catch (e) { return null; } },
 		set: function (k, v) { try { if (v === null) { window.localStorage.removeItem('pct_' + k); } else { window.localStorage.setItem('pct_' + k, v); } } catch (e) { /* private mode */ } }
 	};
+	var storedLang = LS.get('lang') || '';
+	if (!storedLang) {
+		var langCookie = document.cookie.match(/(?:^|; )pct_lang=([^;]+)/);
+		storedLang = langCookie ? decodeURIComponent(langCookie[1]) : '';
+	}
+	var enabledLangs = (cfg.lang && cfg.lang.languages) || [];
+	var storedIsEnabled = enabledLangs.some(function (item) { return item.code === storedLang; });
 	var lang = {
-		list: (cfg.lang && cfg.lang.languages) || [],
-		current: (cfg.lang && cfg.lang.current) || 'en',
+		list: enabledLangs,
+		current: storedIsEnabled ? storedLang : ((cfg.lang && cfg.lang.current) || 'en'),
 		calendar: cfg.calendar || 'gregorian',
 		rtl: !!cfg.rtl
 	};
@@ -71,22 +78,39 @@
 		});
 	}
 
+	function buildApiUrl(base, path, params, fallback) {
+		var url = base || '';
+		if (fallback) {
+			var route = '/pct/v1' + path;
+			params = Object.assign({}, params || {}, { rest_route: route });
+		} else {
+			url += path;
+		}
+		var qs = Object.keys(params || {}).filter(function (k) {
+			return params[k] !== undefined && params[k] !== '';
+		}).map(function (k) {
+			return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+		}).join('&');
+		if (qs) {
+			url += (url.indexOf('?') === -1 ? '?' : '&') + qs;
+		}
+		return url;
+	}
+
 	function api(path, method, body, query) {
-		var url = cfg.rest + path;
-		if (query) {
-			var qs = Object.keys(query).filter(function (k) {
-				return query[k] !== undefined && query[k] !== '';
-			}).map(function (k) {
-				return encodeURIComponent(k) + '=' + encodeURIComponent(query[k]);
-			}).join('&');
-			if (qs) {
-				url += (url.indexOf('?') === -1 ? '?' : '&') + qs;
-			}
+		var params = Object.assign({}, query || {});
+		params.pct_lang = params.pct_lang || lang.current;
+		var headers = { 'X-PCT-LANG': lang.current, 'Accept': 'application/json' };
+		// Anonymous public routes do not need a WP cookie nonce. Sending a cached
+		// nonce is especially fragile on Safari/iOS public pages.
+		if (cfg.loggedIn && cfg.nonce) {
+			headers['X-WP-Nonce'] = cfg.nonce;
 		}
 		var opts = {
 			method: method || 'GET',
 			credentials: 'same-origin',
-			headers: { 'X-WP-Nonce': cfg.nonce, 'X-PCT-LANG': lang.current }
+			cache: 'no-store',
+			headers: headers
 		};
 		var guideToken = LS.get('guide_token');
 		if (guideToken) {
@@ -104,23 +128,56 @@
 				opts.body = JSON.stringify(body);
 			}
 		}
-		return fetch(url, opts).then(function (res) {
-			return res.text().then(function (txt) {
-				var data = null;
-				try {
-					data = txt ? JSON.parse(txt) : null;
-				} catch (e) {
-					data = null;
-				}
-				if (!res.ok) {
-					var err = new Error((data && data.message) || t.error);
-					err.code = data && data.code;
-					err.data = data && data.data;
-					err.status = res.status;
-					throw err;
-				}
-				return data;
+
+		function request(url) {
+			var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+			// Tour generation includes an external AI round-trip and can legitimately
+			// take 30–60s. The previous 15s client timeout caused Safari/iOS and
+			// Android to abort a request while PHP/AI was still working. Keep normal
+			// REST calls short, but give the tour-generation endpoint enough time.
+			var timeoutMs = /^\/tours(?:\/|$)/.test(path) ? 90000 : 15000;
+			var timer = controller ? setTimeout(function () { controller.abort(); }, timeoutMs) : null;
+			var requestOpts = Object.assign({}, opts);
+			if (controller) {
+				requestOpts.signal = controller.signal;
+			}
+			return fetch(url, requestOpts).then(function (res) {
+				if (timer) { clearTimeout(timer); }
+				return res.text().then(function (txt) {
+					var data = null;
+					try { data = txt ? JSON.parse(txt) : null; } catch (e) { data = null; }
+					if (!res.ok) {
+						var err = new Error((data && data.message) || t.error);
+						err.code = data && data.code;
+						err.data = data && data.data;
+						err.status = res.status;
+						throw err;
+					}
+					return data;
+				});
+			}).catch(function (err) {
+				if (timer) { clearTimeout(timer); }
+				throw err;
 			});
+		}
+
+		var primary = buildApiUrl(cfg.rest, path, params, false);
+		var fallback = cfg.restFallback ? buildApiUrl(cfg.restFallback, path, params, true) : '';
+		return request(primary).catch(function (err) {
+			// Never duplicate a long-running tour request after a client-side abort.
+			// A Safari/Android AbortController timeout is a client transport event,
+			// not evidence that the /wp-json/ route itself is unavailable. Retrying
+			// here would start a second AI generation while the first may still run.
+			if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
+				throw err;
+			}
+			// Some hosts/WAFs expose the WordPress REST API through /index.php?rest_route=
+			// while /wp-json/ is blocked. Retry the same-origin fallback for transport
+			// failures and HTTP routing errors, without hiding application errors.
+			if (!fallback || (err && err.status && err.status >= 400 && err.status < 500 && err.status !== 404)) {
+				throw err;
+			}
+			return request(fallback);
 		});
 	}
 
@@ -179,24 +236,38 @@
 	}
 
 	function switchLanguage(code, then) {
-		if (code === lang.current && then) {
+		var meta = enabledLangs.filter(function (item) { return item.code === code; })[0];
+		if (!meta) {
+			return Promise.resolve();
+		}
+		var same = code === lang.current;
+		// Never make the language-choice screen depend on a network round-trip.
+		// On mobile Safari, a blocked/slow REST request must not prevent the next
+		// screen from appearing. Apply the basic locale immediately, then refresh
+		// the full translation bundle in the background.
+		lang.current = code;
+		lang.rtl = !!meta.rtl;
+		LS.set('lang', code);
+		LS.set('lang_chosen', '1');
+		document.cookie = 'pct_lang=' + encodeURIComponent(code) + '; path=/; max-age=31536000; SameSite=Lax';
+		root.setAttribute('dir', lang.rtl ? 'rtl' : 'ltr');
+		root.setAttribute('lang', code);
+		root.classList.toggle('is-rtl', lang.rtl);
+		if (then) {
 			then();
+		}
+		if (same) {
 			return Promise.resolve();
 		}
 		root.classList.add('is-busy');
-		return api('/i18n', 'GET', undefined, { lang: code }).then(function (data) {
+		return api('/i18n', 'GET', undefined, { lang: code, pct_lang: code }).then(function (data) {
 			applyLanguage(code, data);
 			root.classList.remove('is-busy');
-			if (then) {
-				then();
-			} else {
-				rerender();
-			}
+			// If the user is still in the PCT app, refresh the current screen with
+			// the complete localized strings/schema received from the server.
+			rerender();
 		}).catch(function () {
 			root.classList.remove('is-busy');
-			if (then) {
-				then();
-			}
 		});
 	}
 
@@ -255,6 +326,13 @@
 
 	function hasCoords(s) {
 		return s && s.lat && s.lng && !isNaN(parseFloat(s.lat)) && !isNaN(parseFloat(s.lng));
+	}
+
+	function contactUrl(s) {
+		/* "Contact them" must always point to the stored official/event link.
+		 * Do not silently replace it with Google Search; the card has separate
+		 * search/photo links when those are useful. */
+		return (s && s.link) ? s.link : '';
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -804,6 +882,55 @@
 
 	var tourMap = null; // active MapView instance
 
+
+	function googleSearchUrl(name, city) {
+		return 'https://www.google.com/search?q=' + encodeURIComponent(String(name || '') + (city ? ' ' + city : ''));
+	}
+
+	function stopTimeRange(stop) {
+		var start = String(stop && stop.time || '').trim();
+		if (!start) { return ''; }
+		if (/^\d{1,2}:\d{2}\s*[–-]\s*\d{1,2}:\d{2}$/.test(start)) { return start.replace(/-/g, '–'); }
+		if (!/^\d{1,2}:\d{2}$/.test(start)) { return ''; }
+		var parts = start.split(':').map(Number);
+		var mins = parts[0] * 60 + parts[1] + Math.max(15, parseInt(stop.duration || 45, 10) || 45);
+		var hh = String(Math.floor(mins / 60) % 24).padStart(2, '0');
+		var mm = String(mins % 60).padStart(2, '0');
+		return start + '–' + hh + ':' + mm;
+	}
+
+	function stopTags(stop) {
+		return (stop && stop.tags || []).filter(function (x) { return x; }).slice(0, 3).map(function (x) {
+			x = String(x).replace(/^#+/, '').trim();
+			return x ? '#' + x.replace(/\s+/g, '_') : '';
+		}).filter(Boolean);
+	}
+
+	function routeSummary(day, city) {
+		var stops = (day && day.stops || []).slice(0, 4);
+		if (!stops.length) { return null; }
+		var rows = stops.map(function (stop, i) {
+			var url = stop.link || googleSearchUrl(stop.name, city && city.name);
+			var tags = stopTags(stop);
+			var range = stopTimeRange(stop);
+			var meta = [];
+			if (tags.length) { meta.push((t.routeTags || 'Tags:') + ' ' + tags.join(' ')); }
+			if (range) { meta.push(range); }
+			return el('li', { class: 'pct-route-summary-item' }, [
+				el('span', { class: 'pct-route-summary-num', text: String(i + 1) }),
+				el('div', {}, [
+					el('a', { href: url, target: '_blank', rel: 'noopener', text: stop.name }),
+					meta.length ? el('span', { class: 'pct-route-summary-meta', text: ' — ' + meta.join(' — ') }) : null,
+					stop.note ? el('span', { class: 'pct-route-summary-note', text: (t.routeNote || 'Note:') + ' ' + stop.note }) : null
+				])
+			]);
+		});
+		return el('section', { class: 'pct-route-summary' }, [
+			el('h4', { text: sprintf(t.suggestedRoute || 'Suggested route (%d short stops):', stops.length) }),
+			el('ol', {}, rows)
+		]);
+	}
+
 	function renderTour(res) {
 		lastRender = function () { renderTour(res); };
 		var result = res.result;
@@ -815,11 +942,12 @@
 		var daysBox = el('aside', { class: 'pct-days', id: 'pct-days' });
 		var backdrop = el('div', { class: 'pct-days-backdrop', onClick: function () { openMenu(false); } });
 		var message = el('section', { class: 'pct-message', 'aria-live': 'polite' });
-		var burger = el('button', { type: 'button', class: 'pct-hamburger', 'aria-label': t.menu, 'aria-controls': 'pct-days', 'aria-expanded': 'false', onClick: function () { openMenu(true); } }, [el('span'), el('span'), el('span')]);
+		var burger = el('button', { type: 'button', class: 'pct-hamburger', 'aria-label': t.menu, 'aria-controls': 'pct-days', 'aria-expanded': 'false', onClick: function () { openMenu(!daysBox.classList.contains('is-open')); } }, [el('span', { class: 'pct-menu-icon', 'aria-hidden': 'true' }, [el('i'), el('i'), el('i')]), el('span', { class: 'pct-menu-label', text: t.chooseOption || t.menu })]);
 
 		function openMenu(open) {
 			daysBox.classList.toggle('is-open', open);
 			backdrop.classList.toggle('is-open', open);
+			burger.classList.toggle('is-open', open);
 			burger.setAttribute('aria-expanded', open ? 'true' : 'false');
 		}
 
@@ -827,13 +955,19 @@
 		function drawNav() {
 			clear(nav);
 			days.forEach(function (d, i) {
+				var dayLabel = sprintf(t.day, d.day) + (d.proposal_number ? ' · ' + sprintf(t.option, d.proposal_number) : '');
+				if ( i === active ) {
+					var label = burger.querySelector('.pct-menu-label');
+					if ( label ) { label.textContent = dayLabel; }
+					burger.setAttribute('aria-label', (t.chooseOption || t.menu) + ': ' + dayLabel);
+				}
 				nav.appendChild(el('button', { type: 'button', class: i === active ? 'is-active' : '', 'aria-current': i === active ? 'true' : undefined, onClick: function () {
 					active = i;
 					drawNav();
 					drawDay();
 					openMenu(false);
 				} }, [
-					el('strong', { text: sprintf(t.day, d.day) }),
+					el('strong', { text: dayLabel }),
 					el('span', { class: 'pct-small', text: d.title.replace(/^[^—–-]*[—–-]\s*/, '') })
 				]));
 			});
@@ -882,42 +1016,116 @@
 		}
 		daysBox.appendChild(foot);
 
+		function openStopImage(src, alt) {
+			if (!src) { return; }
+			var existing = document.querySelector('.pct-image-lightbox');
+			if (existing) { existing.remove(); }
+			var closeOnEsc;
+			var close = function () {
+				if (box && box.parentNode) { box.remove(); }
+				if (closeOnEsc) { document.removeEventListener('keydown', closeOnEsc); }
+			};
+			var box = el('div', { class: 'pct-image-lightbox', role: 'dialog', 'aria-modal': 'true', 'aria-label': alt || t.photoSearch, onClick: function (e) { if (e.target === box) { close(); } } }, [
+				el('button', { type: 'button', class: 'pct-image-lightbox-close', 'aria-label': t.close, text: '×', onClick: close }),
+				el('img', { src: src, alt: alt || '', class: 'pct-image-lightbox-img' })
+			]);
+			document.body.appendChild(box);
+			closeOnEsc = function (e) { if (e.key === 'Escape') { close(); } };
+			document.addEventListener('keydown', closeOnEsc);
+		}
+
 		function stopCard(s, idx, isAlt) {
-			var tags = (s.tags || []).map(function (tag) { return el('span', { class: 'pct-tag', text: tag }); });
-			if (s.accessible) {
-				tags.push(el('span', { class: 'pct-tag is-access', text: t.accessOptions.wheelchair || 'Accessible' }));
+			var tags = (s.tags || []).filter(function (tag) { return tag; }).slice(0, 5).map(function (tag) { return el('span', { class: 'pct-tag', text: tag }); });
+			if (s.accessible) { tags.push(el('span', { class: 'pct-tag is-access', text: t.accessOptions.wheelchair || 'Accessible' })); }
+			if (s.acc_warning) { tags.push(el('span', { class: 'pct-tag is-warn', text: t.accessibility })); }
+
+			var webUrl = '', photoUrl = '';
+			(s.links || []).forEach(function (lnk) {
+				if (!lnk || !lnk.url) { return; }
+				if (lnk.kind === 'web' && !webUrl) { webUrl = lnk.url; }
+				if (lnk.kind === 'photos' && !photoUrl) { photoUrl = lnk.url; }
+			});
+			if (!webUrl) { webUrl = googleSearchUrl(s.name, city && city.name); }
+			if (!photoUrl) { photoUrl = 'https://www.google.com/search?tbm=isch&q=' + encodeURIComponent(String(s.name || '') + (city ? ' ' + city.name : '')); }
+
+			var descriptionParts = [];
+			if (s.summary) { descriptionParts.push(s.summary); }
+			if (s.note && s.note !== s.summary) { descriptionParts.push(s.note); }
+			var description = null, descriptionToggle = null;
+			if (descriptionParts.length) {
+				var descriptionId = 'pct-desc-' + String(active) + '-' + String(idx) + '-' + String(s.item_id).replace(/[^0-9a-z_-]/gi, 'x');
+				description = el('div', { id: descriptionId, class: 'pct-stop-description is-collapsed' }, [
+					el('p', { class: 'pct-stop-note', text: descriptionParts.join(' ') })
+				]);
+				descriptionToggle = el('button', { type: 'button', class: 'pct-stop-expand', 'aria-expanded': 'false', 'aria-controls': descriptionId, text: t.expandDescription, onClick: function () {
+						var expanded = description.classList.toggle('is-expanded');
+						description.classList.toggle('is-collapsed', !expanded);
+						descriptionToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+						descriptionToggle.textContent = expanded ? t.collapseDescription : t.expandDescription;
+					} });
 			}
-			if (s.acc_warning) {
-				tags.push(el('span', { class: 'pct-tag is-warn', text: t.accessibility }));
+
+			var buttons = [
+				el('a', { class: 'pct-btn pct-btn-sm pct-stop-action', href: webUrl, target: '_blank', rel: 'noopener', text: t.webSearch }),
+				el('a', { class: 'pct-btn pct-btn-sm pct-stop-action', href: photoUrl, target: '_blank', rel: 'noopener', text: t.photoSearch })
+			];
+			if (s.ar_url) {
+				buttons.push(el('a', { class: 'pct-btn pct-btn-sm pct-stop-action pct-ar-action', href: s.ar_url, target: '_blank', rel: 'noopener', text: s.ar_label || t.ar }));
+			} else {
+				buttons.push(el('button', { type: 'button', class: 'pct-btn pct-btn-sm pct-stop-action pct-ar-action is-disabled', disabled: true, title: t.arUnavailable, text: t.ar }));
 			}
-			var links = [];
-			if (s.link) {
-				links.push(el('a', { href: s.link, target: '_blank', rel: 'noopener', text: t.website }));
-			}
-			if (s.organizer_url || s.organizer) {
-				links.push(s.organizer_url ? el('a', { href: s.organizer_url, target: '_blank', rel: 'noopener', text: t.organizer + ': ' + (s.organizer || '') }) : el('span', { class: 'pct-muted', text: t.organizer + ': ' + s.organizer }));
-			}
-			var gurl = s.gmaps_url || (hasCoords(s) ? 'https://www.google.com/maps/search/?api=1&query=' + s.lat + ',' + s.lng : '');
-			if (gurl) {
-				links.push(el('a', { href: gurl, target: '_blank', rel: 'noopener', text: t.openGoogle }));
-			}
+
 			var key = active + ':' + s.item_id;
-			var card = el('li', { class: 'pct-stop' + (isAlt ? ' is-alt' : '') + (visited[key] ? ' is-visited' : ''), 'data-stop': idx }, [
+			var thumb = s.image ? el('button', { type: 'button', class: 'pct-stop-thumb', 'aria-label': t.photoSearch + ': ' + s.name, onClick: function () { openStopImage(s.image, s.name); } }, [
+				el('img', { class: 'pct-stop-image', src: s.image, alt: s.name, loading: 'lazy' })
+			]) : null;
+			return el('li', { class: 'pct-stop' + (isAlt ? ' is-alt' : '') + (visited[key] ? ' is-visited' : ''), 'data-stop': idx }, [
+				thumb,
 				el('div', { class: 'pct-stop-num', text: isAlt ? '+' : String(idx + 1) }),
-				el('div', {}, [
+				el('div', { class: 'pct-stop-content' }, [
 					el('div', { class: 'pct-stop-title' }, [
 						el('strong', { text: s.name }),
 						s.time ? el('span', { class: 'pct-stop-time', text: s.time + (s.duration ? ' · ' + sprintf(t.minutes, s.duration) : '') }) : null,
 						s.start ? el('span', { class: 'pct-stop-time', text: s.start }) : null
 					]),
 					tags.length ? el('div', { class: 'pct-tags' }, tags) : null,
-					s.summary ? el('p', { class: 'pct-stop-note pct-muted', text: s.summary }) : null,
-					s.note ? el('p', { class: 'pct-stop-note', text: s.note }) : null,
-					s.address ? el('p', { class: 'pct-stop-note pct-small pct-muted', text: s.address }) : null,
-					links.length ? el('div', { class: 'pct-stop-links' }, links) : null
+					description,
+					descriptionToggle,
+					el('div', { class: 'pct-stop-actions' }, buttons)
 				])
 			]);
-			return card;
+		}
+
+		function buildStopSlideshow(d) {
+			var box = el('div', { class: 'pct-stop-slideshow', 'aria-label': t.stops });
+			var viewport = el('div', { class: 'pct-stop-slides' });
+			var prev = el('button', { type: 'button', class: 'pct-slide-arrow pct-slide-arrow-prev', 'aria-label': t.previousStop, text: '‹' });
+			var next = el('button', { type: 'button', class: 'pct-slide-arrow pct-slide-arrow-next', 'aria-label': t.nextStopLabel, text: '›' });
+			var slides = (d.stops || []).map(function (s, i) { return stopCard(s, i, false); });
+			slides.forEach(function (slide) { slide.classList.add('pct-slide'); viewport.appendChild(slide); });
+			box.appendChild(prev); box.appendChild(viewport); box.appendChild(next);
+			var index = 0, timer = null, touchX = null;
+			function show(n) {
+				if (!slides.length) { return; }
+				index = (n + slides.length) % slides.length;
+				slides.forEach(function (slide, i) { slide.classList.toggle('is-active', i === index); });
+				prev.disabled = slides.length < 2; next.disabled = slides.length < 2;
+			}
+			function restart() {
+				if (timer) { clearInterval(timer); timer = null; }
+				// Keep manual navigation stable; do not unexpectedly move a reader
+				// while the description is being read.
+			}
+			prev.addEventListener('click', function () { show(index - 1); restart(); });
+			next.addEventListener('click', function () { show(index + 1); restart(); });
+			box.addEventListener('touchstart', function (e) { if (e.touches && e.touches[0]) { touchX = e.touches[0].clientX; } }, { passive: true });
+			box.addEventListener('touchend', function (e) {
+				if (touchX === null || !e.changedTouches || !e.changedTouches[0]) { touchX = null; return; }
+				var dx = e.changedTouches[0].clientX - touchX; touchX = null;
+				if (Math.abs(dx) > 45) { show(index + (dx < 0 ? 1 : -1)); restart(); }
+			}, { passive: true });
+			show(0); restart();
+			return box;
 		}
 
 		function drawDay() {
@@ -927,84 +1135,92 @@
 				message.appendChild(notice(t.noCities));
 				return;
 			}
-			message.appendChild(el('h3', { text: d.title }));
-			if (d.summary) {
-				message.appendChild(el('p', { class: 'pct-summary', text: d.summary }));
-			}
-			message.appendChild(el('div', { class: 'pct-block' }, [
-				el('h4', { text: t.stops }),
-				el('ol', { class: 'pct-stops' }, d.stops.map(function (s, i) { return stopCard(s, i, false); }))
-			]));
-			if (d.alternatives && d.alternatives.length) {
-				message.appendChild(el('div', { class: 'pct-block' }, [
-					el('h4', { text: t.alternatives }),
-					el('ul', { class: 'pct-stops' }, d.alternatives.map(function (s, i) { return stopCard(s, i, true); }))
+			message.appendChild(el('h3', { class: 'pct-proposal-title', text: d.title }));
+			if (d.selection_info) {
+				var info = d.selection_info;
+				/* The compact first line is intentionally visible before the narrative:
+				 * Style | Priority | Suggested time. The remaining Tour Details follow. */
+				message.appendChild(el('div', { class: 'pct-proposal-lead' }, [
+					el('span', { class: 'pct-lead-item', text: t.travelStyle + ': ' + (info.travel_styles || '—') }),
+					el('span', { class: 'pct-lead-sep', text: '|' }),
+					el('span', { class: 'pct-lead-item', text: t.priority + ': ' + (info.priority_interest || '—') }),
+					el('span', { class: 'pct-lead-sep', text: '|' }),
+					el('span', { class: 'pct-lead-item', text: t.preferredTime + ': ' + (info.preferred_times || info.time_window || '—') })
 				]));
 			}
-			if (d.accessibility_notes) {
-				message.appendChild(el('div', { class: 'pct-block' }, [el('h4', { text: t.accessibility }), el('p', { text: d.accessibility_notes })]));
+			if (d.summary) {
+				message.appendChild(el('p', { class: 'pct-summary pct-proposal-summary', text: d.summary }));
 			}
-			if (d.quick_search_hints && d.quick_search_hints.length) {
-				var searchBase = city.search_url || '';
-				message.appendChild(el('div', { class: 'pct-block' }, [
-					el('h4', { text: t.hints }),
-					el('div', { class: 'pct-hints' }, d.quick_search_hints.map(function (h) {
-						var href = searchBase ? searchBase + (searchBase.indexOf('?') > -1 ? '&' : '?') + 's=' + encodeURIComponent(h) : 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(h + ' ' + (city.name || ''));
-						return el('a', { href: href, target: '_blank', rel: 'noopener', text: h });
-					}).concat((city.channels || []).map(function (c) {
-						return el('a', { class: 'is-channel', href: c.url, target: '_blank', rel: 'noopener', text: c.label || c.url });
-					})))
+			var routeBrief = routeSummary(d, city);
+			if (routeBrief) { message.appendChild(routeBrief); }
+			if (d.selection_info) {
+				var info2 = d.selection_info;
+				message.appendChild(el('div', { class: 'pct-block pct-proposal-info' }, [
+					el('h4', { text: t.proposalInfo }),
+					el('div', { class: 'pct-info-grid' }, [
+						el('span', { text: t.timeWindow + ': ' + (info2.time_window || '') }),
+						el('span', { text: t.stopCount + ': ' + (info2.stop_count || 0) }),
+						info2.pace ? el('span', { text: t.pace + ': ' + info2.pace }) : null
+					])
 				]));
 			}
 
-			/* map */
-			if (tourMap) {
-				tourMap.destroy();
-				tourMap = null;
-			}
+			/* Map and navigation immediately after tour details. */
+			if (tourMap) { tourMap.destroy(); tourMap = null; }
 			var mapWrap = el('div', { class: 'pct-map-wrap' });
 			message.appendChild(mapWrap);
 			if (typeof L !== 'undefined') {
 				tourMap = new MapView(mapWrap, d, result.city, {
 					onVisited: function (stopIndex) {
 						var s = d.stops[stopIndex];
+						if (!s) { return; }
 						visited[active + ':' + s.item_id] = true;
 						var card = message.querySelector('.pct-stops .pct-stop[data-stop="' + stopIndex + '"]');
-						if (card) {
-							card.classList.add('is-visited');
-						}
+						if (card) { card.classList.add('is-visited'); }
 					},
 					onCurrent: function (stopIndex) {
 						message.querySelectorAll('.pct-stops .pct-stop').forEach(function (c) {
-							c.classList.toggle('is-current', parseInt(c.getAttribute('data-stop'), 10) === stopIndex && !c.classList.contains('is-alt'));
+							c.classList.toggle('is-current', parseInt(c.getAttribute('data-stop'), 10) === stopIndex);
 						});
-					}
+				}
 				});
-			}
-			var links = el('div', { class: 'pct-map-links' });
-			if (city.gmaps_url) {
-				links.appendChild(el('a', { href: city.gmaps_url, target: '_blank', rel: 'noopener', text: t.cityOnGoogle }));
-			}
-			if (d.map && d.map.google_url) {
-				links.appendChild(el('a', { href: d.map.google_url, target: '_blank', rel: 'noopener', text: t.openGoogle }));
-			}
-			if (d.map && d.map.osm_url) {
-				links.appendChild(el('a', { href: d.map.osm_url, target: '_blank', rel: 'noopener', text: t.openOsm }));
-			}
-			if (links.childNodes.length) {
-				mapWrap.appendChild(links);
+				setTimeout(function () { if (tourMap && tourMap.map) { tourMap.map.invalidateSize(true); } }, 60);
+				window.setTimeout(function () { if (tourMap && tourMap.map) { tourMap.map.invalidateSize(true); } }, 500);
+			} else {
+				mapWrap.appendChild(notice(t.mapUnavailable || 'Interactive map is temporarily unavailable. Use the navigation links below.', 'warn'));
 			}
 
-			/* curated My Maps */
-			if (city.mymaps && city.mymaps.length) {
-				var mm = el('div', { class: 'pct-block pct-mymaps' }, [el('h4', { text: t.myMaps })]);
-				city.mymaps.forEach(function (m) {
-					mm.appendChild(el('p', {}, [el('a', { href: m.url, target: '_blank', rel: 'noopener', text: m.label || m.url })]));
-					if (m.embed) {
-						mm.appendChild(el('iframe', { src: m.embed, loading: 'lazy', title: m.label || t.myMaps, referrerpolicy: 'no-referrer-when-downgrade' }));
-					}
-				});
-				message.appendChild(mm);
+			message.appendChild(el('div', { class: 'pct-block pct-stop-block' }, [
+				el('h4', { text: t.stops }),
+				buildStopSlideshow(d)
+			]));
+
+			if (d.serendipity && d.serendipity.length) {
+				message.appendChild(el('div', { class: 'pct-block pct-serendipity' }, [
+					el('h4', { text: t.serendipity || 'Serendipity discoveries' }),
+					...d.serendipity.map(function (s) {
+						var links = s.links || [];
+						var primary = links.find(function (l) { return l && l.url; });
+						return el('div', { class: 'pct-serendipity-item' }, [
+							el('strong', { text: s.name || '' }),
+							el('p', { text: s.note || t.serendipityNote || '' }),
+						primary ? el('a', { href: primary.url, target: '_blank', rel: 'noopener', text: primary.label || t.details }) : null
+						]);
+					})
+				]));
+			}
+
+			if (d.accessibility_notes) {
+				message.appendChild(el('div', { class: 'pct-block' }, [el('h4', { text: t.accessibility }), el('p', { text: d.accessibility_notes })]));
+			}
+			var qlinks = d.quick_search_links || [];
+			if (qlinks.length) {
+				message.appendChild(el('div', { class: 'pct-block' }, [
+					el('h4', { text: t.hints }),
+					el('div', { class: 'pct-hints' }, qlinks.map(function (lnk) {
+						return el('a', { class: lnk.kind === 'city_channel' ? 'is-channel' : '', href: lnk.url, target: '_blank', rel: 'noopener', text: lnk.label });
+					}))
+				]));
 			}
 		}
 
@@ -1052,6 +1268,13 @@
 		this.btnNav = el('button', { type: 'button', class: 'pct-btn pct-btn-sm', text: t.navigate, onClick: function () { self.setMode('navigate'); } });
 		container.appendChild(el('div', { class: 'pct-map-bar' }, [this.btnPreview, this.btnNav, this.status]));
 		this.canvas = el('div', { class: 'pct-map', role: 'region', 'aria-label': t.preview });
+		/* Inline dimensions protect Leaflet from themes/page-builders that override
+		 * .pct-map height. This also makes the map visible even before the tile layer
+		 * has completed loading. */
+		this.canvas.style.height = window.innerWidth <= 800 ? '320px' : '380px';
+		this.canvas.style.minHeight = this.canvas.style.height;
+		this.places = el('div', { class: 'pct-places' });
+		container.appendChild(this.places);
 		container.appendChild(this.canvas);
 		container.appendChild(el('div', { class: 'pct-legend' }, [
 			el('span', { class: 'pct-legend-item is-planned', text: t.plannedRoute }),
@@ -1059,11 +1282,12 @@
 		]));
 		this.panel = el('div', { class: 'pct-nav-panel pct-hidden' });
 		container.appendChild(this.panel);
-		this.places = el('div', { class: 'pct-places' });
-		container.appendChild(this.places);
 
-		this.map = L.map(this.canvas, { scrollWheelZoom: false });
-		L.tileLayer(cfg.maps.tileUrl || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: cfg.maps.attribution || '', maxZoom: 19 }).addTo(this.map);
+		this.map = L.map(this.canvas, { scrollWheelZoom: false, preferCanvas: true });
+		this.addTilesWithFallback();
+		/* A second size pass fixes mobile/accordion/layout calculations. */
+		window.requestAnimationFrame(function () { if (self.map) { self.map.invalidateSize(true); } });
+		window.setTimeout(function () { if (self.map) { self.map.invalidateSize(true); } }, 350);
 
 		this.markers = this.stops.map(function (s) {
 			var first = s === self.stops[0];
@@ -1086,10 +1310,12 @@
 			L.marker([parseFloat(s.lat), parseFloat(s.lng)], { icon: icon, title: s.name, opacity: 0.85 }).addTo(self.map).bindPopup('<strong>' + escapeHtml(s.name) + '</strong>');
 		});
 
-		// Planned tour route: green, static until the tour is re-generated.
-		this.route = L.polyline(this.stops.map(function (s) { return s.latlng; }), { color: '#067647', weight: 4, opacity: 0.8, dashArray: '6 8' }).addTo(this.map);
+		// Planned route is drawn only after the routing service returns real road/path geometry.
+		// Never show straight stop-to-stop segments as if they were a navigable route.
+		this.route = L.polyline([], { color: '#067647', weight: 4, opacity: 0.88 }).addTo(this.map);
 		if (this.stops.length > 1) {
-			this.map.fitBounds(this.route.getBounds(), { padding: [30, 30], animate: false });
+			var stopBounds = L.latLngBounds(this.stops.map(function (s) { return s.latlng; }));
+			this.map.fitBounds(stopBounds, { padding: [30, 30], animate: false });
 		} else {
 			this.map.setView(this.stops.length ? this.stops[0].latlng : [parseFloat(city.lat) || 0, parseFloat(city.lng) || 0], city.zoom || 13);
 		}
@@ -1103,7 +1329,29 @@
 		});
 	}
 
-	/* Routing goes through the plugin's REST proxy (OSRM / Mapbox / Google) so no provider keys reach the browser. */
+
+	MapView.prototype.addTilesWithFallback = function () {
+		var self = this;
+		var urls = [cfg.maps.tileUrl || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'].concat(cfg.maps.tileFallbacks || []);
+		var attributions = [cfg.maps.attribution || ''].concat(cfg.maps.tileFallbackAttributions || []);
+		var index = 0;
+		function add() {
+			if (index >= urls.length) { return; }
+			var layer = L.tileLayer(urls[index], { attribution: attributions[index] || '', maxZoom: 19 });
+			var switched = false;
+			layer.on('tileerror', function () {
+				if (switched || index >= urls.length - 1) { return; }
+				switched = true;
+				self.map.removeLayer(layer);
+				index++;
+				add();
+			});
+			layer.addTo(self.map);
+		}
+		add();
+	};
+
+	/* Routing goes through the plugin REST proxy (OSRM / Valhalla / Mapbox / Google); provider keys stay server-side. */
 	MapView.prototype.routeBetween = function (points, mode) {
 		return api('/route', 'POST', { points: points, mode: mode || (this.day.map && this.day.map.mode) || 'walking' }).then(function (r) {
 			if (!r || !r.coordinates || r.coordinates.length < 2) {
@@ -1122,19 +1370,22 @@
 		for (var i = 1; i < this.stops.length; i++) {
 			straight += haversine(this.stops[i - 1].latlng, this.stops[i].latlng);
 		}
-		this.status.textContent = formatDistance(straight);
+		this.status.textContent = t.routeFailed;
+		this.route.setLatLngs([]);
 		if (cfg.maps.routing === 'straight') {
-			this.route.setStyle({ dashArray: null });
+			this.status.textContent = t.routeFailed;
 			return;
 		}
-		this.routeBetween(this.stops.map(function (s) { return s.latlng; })).then(function (r) {
+		this.routeBetween(this.stops.map(function (s) { return s.latlng; }), (this.day.map && this.day.map.mode) || 'walking').then(function (r) {
 			self.route.setLatLngs(r.coordinates);
-			self.route.setStyle({ dashArray: null });
 			if (r.distance) {
 				self.status.textContent = sprintf(t.routeTotal, formatDistance(r.distance), formatDuration(r.duration));
+			} else {
+				self.status.textContent = t.routeFailed;
 			}
-		}).catch(function () {
-			self.status.textContent = t.routeFailed + ' · ' + formatDistance(straight);
+		}).catch(function (err) {
+			self.route.setLatLngs([]);
+			self.status.textContent = (err && err.message && err.message !== t.error) ? err.message : t.routeFailed;
 		});
 	};
 
@@ -1237,7 +1488,11 @@
 		if (mode === 'preview') {
 			this.stopWatching();
 			if (this.stops.length > 1) {
-				this.map.fitBounds(this.route.getBounds(), { padding: [30, 30] });
+				var routePoints = this.route && this.route.getLatLngs ? this.route.getLatLngs() : [];
+				var bounds = routePoints && routePoints.length > 1 ? this.route.getBounds() : L.latLngBounds(this.stops.map(function (s) { return s.latlng; }));
+				if (bounds && bounds.isValid()) {
+					this.map.fitBounds(bounds, { padding: [30, 30] });
+				}
 			}
 			return;
 		}
@@ -1407,7 +1662,12 @@
 		} else {
 			this.panel.appendChild(el('button', { type: 'button', class: 'pct-btn pct-btn-sm', text: t.backToTour, onClick: function () { self.clearGoto(); } }));
 		}
-		this.panel.appendChild(el('a', { class: 'pct-btn pct-btn-sm', target: '_blank', rel: 'noopener', text: t.openGoogle, href: 'https://www.google.com/maps/dir/?api=1&origin=' + latlng[0] + ',' + latlng[1] + '&destination=' + target.latlng[0] + ',' + target.latlng[1] + '&travelmode=' + mode }));
+		if (target.stop && target.stop.stop) {
+			var contact = contactUrl(target.stop.stop);
+			if (contact) {
+				this.panel.appendChild(el('a', { class: 'pct-btn pct-btn-sm pct-contact', target: '_blank', rel: 'noopener', text: t.contact, href: contact }));
+			}
+		}
 
 		if (!this.followed) {
 			this.followed = true;
@@ -1456,6 +1716,37 @@
 			} }));
 		}
 		return h;
+	}
+
+	function forgetVibeDeviceAndReturnToOtp() {
+		clearTimeout(vibe.timer);
+		LS.set('visitor_token', null);
+		LS.set('visitor_mobile', null);
+		vibe.mobile = '';
+		vibe.requests = null;
+		startVibe();
+	}
+
+	function downloadVibeImageAndForget(url) {
+		fetch(url, { credentials: 'same-origin' }).then(function (res) {
+			if (!res.ok) { throw new Error('download'); }
+			return res.blob();
+		}).then(function (blob) {
+			var objectUrl = URL.createObjectURL(blob);
+			var a = document.createElement('a');
+			a.href = objectUrl;
+			a.download = 'my-trip-my-vibe.' + ((blob.type || '').indexOf('jpeg') >= 0 ? 'jpg' : 'png');
+			document.body.appendChild(a);
+			a.click();
+			a.remove();
+			setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 1500);
+		}).catch(function () {
+			// If a browser blocks blob downloads, still open the image normally so
+			// the user can save it, then finish the verified-device session.
+			window.open(url, '_blank', 'noopener');
+		}).then(function () {
+			forgetVibeDeviceAndReturnToOtp();
+		});
 	}
 
 	function startVibe() {
@@ -1514,18 +1805,21 @@
 
 	function choiceGroup(name, options, current, onPick) {
 		return el('div', { class: 'pct-choices', role: 'radiogroup' }, (options || []).map(function (o) {
-			var input = el('input', { type: 'radio', name: name, value: o, checked: o === current, onChange: function (e) {
-				onPick(o);
+			var value = (typeof o === 'object' && o) ? o.value : o;
+			var label = (typeof o === 'object' && o) ? o.label : o;
+			var input = el('input', { type: 'radio', name: name, value: value, checked: value === current, onChange: function (e) {
+				onPick(value);
 				e.target.parentNode.parentNode.querySelectorAll('.pct-choice').forEach(function (c) { c.classList.toggle('is-checked', c.querySelector('input').checked); });
 			} });
-			return el('label', { class: 'pct-choice' + (o === current ? ' is-checked' : '') }, [input, o]);
+			return el('label', { class: 'pct-choice' + (value === current ? ' is-checked' : '') }, [input, label]);
 		}));
 	}
 
 	function renderVibeHome() {
 		lastRender = renderVibeHome;
 		var v = cfg.vibe;
-		var picked = { vibe: (v.vibes || [])[0] || '', style: (v.styles || [])[0] || '', subject: (v.subjects || [])[0] || '' };
+		function optionValue(o) { return (typeof o === 'object' && o) ? o.value : o; }
+		var picked = { vibe: optionValue((v.vibes || [])[0]) || '', style: optionValue((v.styles || [])[0]) || '', subject: optionValue((v.subjects || [])[0]) || '' };
 		var msg = el('div');
 		var name = el('input', { type: 'text', autocomplete: 'name' });
 		var email = el('input', { type: 'email', autocomplete: 'email' });
@@ -1547,27 +1841,38 @@
 		var notes = el('textarea', { rows: 3 });
 		var consent = el('input', { type: 'checkbox', required: true });
 		var submit = el('button', { type: 'submit', class: 'pct-btn pct-btn-primary', text: t.vibeSubmit });
+		var autoConfirm = false;
 		var form = el('form', { class: 'pct-form pct-vibe-form', onSubmit: function (e) {
 			e.preventDefault();
 			if (!photo.files || !photo.files[0] || !consent.checked) {
 				return;
 			}
+			// When administrator approval is OFF, use a deliberate second click as
+			// the visitor confirmation. This replaces the confusing first-request
+			// server error that could occur on hosts with slow loopback/cron.
+			if (!v.requireApproval && !autoConfirm) {
+				autoConfirm = true;
+				clear(msg);
+				msg.appendChild(notice(t.vibeConfirm || 'Please send again to confirm.', 'warn'));
+				submit.textContent = t.vibeSubmit;
+				msg.scrollIntoView({ behavior: 'smooth', block: 'center' });
+				return;
+			}
 			var fd = new FormData();
 			fd.append('photo', photo.files[0]);
-			fd.append('name', name.value);
-			fd.append('email', email.value);
 			fd.append('city_id', citySel.value);
 			fd.append('city', citySel.options[citySel.selectedIndex] ? citySel.options[citySel.selectedIndex].text : '');
 			fd.append('vibe', picked.vibe);
 			fd.append('style', picked.style);
-			fd.append('subject', picked.subject);
+			if (v.subjectVisible !== false) { fd.append('subject', picked.subject); }
 			fd.append('notes', notes.value);
 			submit.disabled = true;
 			submit.textContent = t.saving;
 			api('/vibe/requests', 'POST', fd).then(function (r) {
 				clear(msg);
-				msg.appendChild(notice(t.vibeSent, 'ok'));
+				msg.appendChild(notice(v.requireApproval ? t.vibeSent : (t.vibeSentAuto || t.vibeSent), 'ok'));
 				form.reset();
+				autoConfirm = false;
 				preview.classList.add('pct-hidden');
 				vibe.requests = [r].concat(vibe.requests || []);
 				drawRequests();
@@ -1588,11 +1893,7 @@
 			el('div', { class: 'pct-field' }, [el('label', { text: t.photo }), photo, el('p', { class: 'pct-help', text: sprintf(t.photoHint, v.maxMb || 8) }), preview]),
 			el('div', { class: 'pct-field' }, [el('span', { class: 'pct-label', text: t.vibeChoice }), choiceGroup('pct-vibe', v.vibes, picked.vibe, function (o) { picked.vibe = o; })]),
 			el('div', { class: 'pct-field' }, [el('span', { class: 'pct-label', text: t.styleChoice }), choiceGroup('pct-style', v.styles, picked.style, function (o) { picked.style = o; })]),
-			el('div', { class: 'pct-field' }, [el('span', { class: 'pct-label', text: t.subjectChoice }), choiceGroup('pct-subject', v.subjects, picked.subject, function (o) { picked.subject = o; })]),
-			el('div', { class: 'pct-grid-2' }, [
-				el('div', { class: 'pct-field' }, [el('label', { text: t.labels.name }), name]),
-				el('div', { class: 'pct-field' }, [el('label', { text: t.labels.email + ' (' + t.optional + ')' }), email])
-			]),
+			v.subjectVisible !== false ? el('div', { class: 'pct-field' }, [el('span', { class: 'pct-label', text: t.subjectChoice }), choiceGroup('pct-subject', v.subjects, picked.subject, function (o) { picked.subject = o; })]) : null,
 			el('div', { class: 'pct-field' }, [el('label', { text: t.labels.city }), citySel]),
 			el('div', { class: 'pct-field' }, [el('label', { text: t.notes }), notes]),
 			el('label', { class: 'pct-consent' }, [consent, ' ' + t.consent]),
@@ -1612,16 +1913,35 @@
 			}
 			vibe.requests.forEach(function (r) {
 				var actions = [];
+				var imageNode = null;
 				if (r.image_url) {
-					actions.push(el('a', { class: 'pct-btn pct-btn-sm', href: r.image_url, download: '', target: '_blank', rel: 'noopener', text: t.download }));
+					var imageLink = el('a', { href: r.image_url, class: 'pct-image-save-link', title: t.download, onClick: function (e) {
+						e.preventDefault();
+						downloadVibeImageAndForget(r.image_url);
+					} });
+					imageLink.appendChild(el('img', { src: r.image_url, alt: r.vibe + ' · ' + r.style, class: 'pct-request-img' }));
+					imageNode = imageLink;
+					actions.push(el('button', { type: 'button', class: 'pct-btn pct-btn-sm', text: t.download, onClick: function () {
+						downloadVibeImageAndForget(r.image_url);
+					} }));
 					if (navigator.share) {
 						actions.push(el('button', { type: 'button', class: 'pct-btn pct-btn-sm', text: t.share, onClick: function () {
-							navigator.share({ title: t.vibe, url: r.image_url }).catch(function () {});
+							var done = false;
+							var finishShare = function () { if (!done) { done = true; forgetVibeDeviceAndReturnToOtp(); } };
+							if (navigator.canShare && window.File) {
+								fetch(r.image_url, { credentials: 'same-origin' }).then(function (res) { return res.blob(); }).then(function (blob) {
+									var file = new File([blob], 'my-trip-my-vibe.png', { type: blob.type || 'image/png' });
+									if (navigator.canShare({ files: [file] })) { return navigator.share({ title: t.vibe, files: [file] }); }
+									return navigator.share({ title: t.vibe, url: r.image_url });
+							}).then(finishShare).catch(function () {});
+							} else {
+								navigator.share({ title: t.vibe, url: r.image_url }).then(finishShare).catch(function () {});
+							}
 						} }));
 					}
 				}
 				list.appendChild(el('li', { class: 'pct-request is-' + r.status }, [
-					r.image_url ? el('img', { src: r.image_url, alt: r.vibe + ' · ' + r.style, class: 'pct-request-img' }) : null,
+					imageNode,
 					el('div', { class: 'pct-request-body' }, [
 						el('strong', { text: [r.vibe, r.style].filter(Boolean).join(' · ') }),
 						el('span', { class: 'pct-badge is-' + r.status, text: r.label || r.status }),
@@ -1632,6 +1952,7 @@
 				]));
 			});
 		}
+
 		function loadRequests() {
 			return api('/vibe/requests').then(function (rows) {
 				vibe.requests = rows;
@@ -1909,7 +2230,24 @@
 				return;
 			}
 			leaflet = L.map(pickMap, { scrollWheelZoom: false }).setView([48.8566, 2.3522], 4);
-			L.tileLayer(cfg.maps.tileUrl || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: cfg.maps.attribution || '', maxZoom: 19 }).addTo(leaflet);
+			(function addGuideTiles() {
+				var urls = [cfg.maps.tileUrl || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'].concat(cfg.maps.tileFallbacks || []);
+				var attrs = [cfg.maps.attribution || ''].concat(cfg.maps.tileFallbackAttributions || []);
+				var idx = 0;
+				function add() {
+					if (!urls[idx]) { return; }
+					var layer = L.tileLayer(urls[idx], { attribution: attrs[idx] || '', maxZoom: 19 }).addTo(leaflet);
+					var switched = false;
+					layer.on('tileerror', function () {
+						if (switched || idx >= urls.length - 1) { return; }
+						switched = true;
+						leaflet.removeLayer(layer);
+						idx++;
+						add();
+					});
+				}
+				add();
+			})();
 			leaflet.on('click', function (e) { placeMarker([e.latlng.lat, e.latlng.lng]); });
 			// centre on the selected city if we can resolve its coordinates
 			f.city_id.addEventListener('change', centreOnCity);
@@ -2008,7 +2346,19 @@
 		}
 	}
 
+	function enforceHttps() {
+		if (window.location.protocol !== 'http:' || !window.location.host) {
+			return false;
+		}
+		// The PCT page carries visitor data and REST requests. Safari/iOS is much
+		// less tolerant of an HTTP document talking to an HTTPS REST endpoint.
+		// Move the page to the secure origin before booting the app.
+		window.location.replace('https://' + window.location.host + window.location.pathname + window.location.search + window.location.hash);
+		return true;
+	}
+
 	function boot() {
+		if (enforceHttps()) { return; }
 		if (cfg.tourId && cfg.tourToken) {
 			loadSharedTour(cfg.tourId, cfg.tourToken);
 			return;

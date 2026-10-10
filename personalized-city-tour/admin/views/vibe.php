@@ -13,9 +13,16 @@ $notices = array(
 	'rejected'  => __( 'Request rejected and the visitor notified.', 'personalized-city-tour' ),
 	'delivered' => __( 'Marked as delivered.', 'personalized-city-tour' ),
 	'deleted'   => __( 'Request deleted.', 'personalized-city-tour' ),
+	'push_test_ok' => __( 'Test browser notification sent to your subscribed devices.', 'personalized-city-tour' ),
+	'push_test_error' => __( 'No browser notification was sent. See the diagnostic details below and re-enable notifications on this device.', 'personalized-city-tour' ),
 	'sms_done'  => __( 'Message marked as sent.', 'personalized-city-tour' ),
 	'error'     => __( 'The action could not be performed.', 'personalized-city-tour' ),
 );
+$push_test_diag = get_transient( 'pct_push_test_last_' . get_current_user_id() );
+if ( is_array( $push_test_diag ) ) {
+	delete_transient( 'pct_push_test_last_' . get_current_user_id() );
+}
+
 $action_form = function ( $id, $action, $label, $class = 'button', $extra = '' ) {
 	?>
 	<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="pct-inline-form" <?php echo 'delete' === $action ? 'data-confirm' : ''; ?>>
@@ -34,13 +41,32 @@ $action_form = function ( $id, $action, $label, $class = 'button', $extra = '' )
 	<?php if ( $msg && isset( $notices[ $msg ] ) ) : ?>
 		<div class="notice <?php echo 'error' === $msg ? 'notice-error' : 'notice-success'; ?> is-dismissible"><p><?php echo esc_html( $notices[ $msg ] ); ?></p></div>
 	<?php endif; ?>
-	<p class="description"><?php esc_html_e( 'Visitors verify their mobile number with a one-time code, upload a photo, pick a vibe / style / subject and request an AI illustration. Requests wait here for your approval (fee settlement), are generated in the background and delivered by SMS, e-mail or manually.', 'personalized-city-tour' ); ?></p>
+	<?php if ( ! empty( $push_test_diag['errors'] ) ) : ?>
+		<div class="notice notice-warning"><p><strong><?php esc_html_e( 'Web Push diagnostic:', 'personalized-city-tour' ); ?></strong> <?php echo esc_html( wp_json_encode( $push_test_diag['errors'], JSON_UNESCAPED_UNICODE ) ); ?></p></div>
+	<?php endif; ?>
+	<p class="description"><?php echo esc_html( ! empty( $vibe['require_approval'] ) ? __( 'Visitors verify their mobile number with a one-time code, upload a photo, pick a vibe / style / subject and request an AI illustration. Requests wait here for your approval before background generation.', 'personalized-city-tour' ) : __( 'Visitors verify their mobile number with a one-time code, upload a photo, pick a vibe / style / subject and request an AI illustration. Approval is OFF: generation starts automatically after the visitor confirms the second click.', 'personalized-city-tour' ) ); ?> <?php esc_html_e( 'Delivery can be by SMS, e-mail or manually.', 'personalized-city-tour' ); ?></p>
 
-	<h2><?php esc_html_e( 'Requests', 'personalized-city-tour' ); ?></h2>
+	<div class="pct-push-admin-box">
+		<h2><?php esc_html_e( 'Browser notifications', 'personalized-city-tour' ); ?></h2>
+		<p class="description"><?php esc_html_e( 'Enable notifications on this administrator device. When a visitor requests an OTP, the plugin will send the notification “درخواست تولید عکس آمده است” to subscribed administrator devices.', 'personalized-city-tour' ); ?></p>
+		<label class="pct-push-permission-admin">
+			<input type="checkbox" id="pct-push-permission" />
+			<span><?php esc_html_e( 'Allow plugin and browser to send notifications', 'personalized-city-tour' ); ?></span>
+		</label>
+		<p id="pct-push-status" class="description" aria-live="polite"></p>
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="pct-inline-form pct-push-test-form">
+			<?php wp_nonce_field( 'pct_push_test' ); ?>
+			<input type="hidden" name="action" value="pct_push_test" />
+			<button type="submit" id="pct-push-test" class="button" disabled><?php esc_html_e( 'Test browser notification', 'personalized-city-tour' ); ?></button>
+			<span class="description"><?php esc_html_e( 'First enable the checkbox above, then use this button to send a real Web Push test from the server to this administrator device.', 'personalized-city-tour' ); ?></span>
+		</form>
+	</div>
+
+	<h2><?php esc_html_e( 'Requests', 'personalized-city-tour' ); ?> <span class="pct-admin-count-badge"><?php echo (int) count( $requests ); ?></span></h2>
 	<?php if ( ! $requests ) : ?>
 		<p class="description"><?php esc_html_e( 'No requests yet.', 'personalized-city-tour' ); ?></p>
 	<?php else : ?>
-		<table class="widefat striped pct-vibe-table">
+		<div class="pct-vibe-table-scroll"><table class="widefat striped pct-vibe-table">
 			<thead><tr>
 				<th><?php esc_html_e( 'Request', 'personalized-city-tour' ); ?></th>
 				<th><?php esc_html_e( 'Visitor', 'personalized-city-tour' ); ?></th>
@@ -71,8 +97,12 @@ $action_form = function ( $id, $action, $label, $class = 'button', $extra = '' )
 					</td>
 					<td class="pct-actions">
 						<?php if ( 'pending' === $r['status'] ) : ?>
-							<?php $action_form( $r['id'], 'approve', __( 'Approve & generate', 'personalized-city-tour' ), 'button button-primary', '<input type="hidden" name="generate_now" value="1" />' ); ?>
-							<?php $action_form( $r['id'], 'reject', __( 'Reject', 'personalized-city-tour' ), 'button', '<input type="text" name="reason" placeholder="' . esc_attr__( 'Reason (optional)', 'personalized-city-tour' ) . '" />' ); ?>
+							<?php if ( empty( $vibe['require_approval'] ) ) : ?>
+								<?php $action_form( $r['id'], 'generate', __( 'Generate now', 'personalized-city-tour' ), 'button button-primary' ); ?>
+							<?php else : ?>
+								<?php $action_form( $r['id'], 'approve', __( 'Approve & generate', 'personalized-city-tour' ), 'button button-primary', '<input type="hidden" name="generate_now" value="1" />' ); ?>
+								<?php $action_form( $r['id'], 'reject', __( 'Reject', 'personalized-city-tour' ), 'button', '<input type="text" name="reason" placeholder="' . esc_attr__( 'Reason (optional)', 'personalized-city-tour' ) . '" />' ); ?>
+							<?php endif; ?>
 						<?php elseif ( 'failed' === $r['status'] || 'approved' === $r['status'] ) : ?>
 							<?php $action_form( $r['id'], 'generate', __( 'Generate now', 'personalized-city-tour' ), 'button button-primary' ); ?>
 						<?php elseif ( 'done' === $r['status'] ) : ?>
@@ -85,12 +115,12 @@ $action_form = function ( $id, $action, $label, $class = 'button', $extra = '' )
 				</tr>
 			<?php endforeach; ?>
 			</tbody>
-		</table>
+		</table></div>
 	<?php endif; ?>
 
 	<?php if ( $outbox ) : ?>
-		<h2><?php esc_html_e( 'SMS outbox (send from your phone)', 'personalized-city-tour' ); ?></h2>
-		<table class="widefat striped">
+		<h2 id="pct-sms-outbox"><?php esc_html_e( 'SMS outbox (send from your phone)', 'personalized-city-tour' ); ?> <span class="pct-admin-count-badge"><?php echo (int) count( $outbox ); ?></span></h2>
+		<div class="pct-vibe-table-scroll pct-sms-outbox-scroll"><table class="widefat striped">
 			<thead><tr><th><?php esc_html_e( 'Time', 'personalized-city-tour' ); ?></th><th><?php esc_html_e( 'To', 'personalized-city-tour' ); ?></th><th><?php esc_html_e( 'Message', 'personalized-city-tour' ); ?></th><th></th></tr></thead>
 			<tbody>
 			<?php foreach ( $outbox as $sms ) : ?>
@@ -110,7 +140,7 @@ $action_form = function ( $id, $action, $label, $class = 'button', $extra = '' )
 				</tr>
 			<?php endforeach; ?>
 			</tbody>
-		</table>
+		</table></div>
 	<?php endif; ?>
 
 	<h2><?php esc_html_e( 'Settings', 'personalized-city-tour' ); ?></h2>
@@ -123,6 +153,7 @@ $action_form = function ( $id, $action, $label, $class = 'button', $extra = '' )
 				<td>
 					<label><input type="checkbox" name="enabled" value="1" <?php checked( $vibe['enabled'] ); ?> /> <?php esc_html_e( 'Offer “My Trip, My Vibe” on the frontend', 'personalized-city-tour' ); ?></label><br>
 					<label><input type="checkbox" name="require_approval" value="1" <?php checked( $vibe['require_approval'] ); ?> /> <?php esc_html_e( 'Require administrator approval before generating (recommended when a fee applies)', 'personalized-city-tour' ); ?></label><br>
+					<label><input type="checkbox" name="subject_visible" value="1" <?php checked( $vibe['subject_visible'] ); ?> /> <?php esc_html_e( 'Show the Subject choices on the public form', 'personalized-city-tour' ); ?></label><br>
 					<label><input type="checkbox" name="sandbox" value="1" <?php checked( $vibe['sandbox'] ); ?> /> <?php esc_html_e( 'Sandbox: show OTP codes on screen and generate placeholder SVG illustrations (no image API calls)', 'personalized-city-tour' ); ?></label>
 				</td>
 			</tr>
@@ -157,6 +188,8 @@ $action_form = function ( $id, $action, $label, $class = 'button', $extra = '' )
 					</select>
 					<label><?php esc_html_e( 'OTP validity (minutes)', 'personalized-city-tour' ); ?> <input type="number" name="otp_ttl" value="<?php echo esc_attr( $vibe['otp_ttl'] ); ?>" min="2" max="60" class="small-text" /></label>
 					<label><?php esc_html_e( 'Max upload (MB)', 'personalized-city-tour' ); ?> <input type="number" name="max_upload_mb" value="<?php echo esc_attr( $vibe['max_upload_mb'] ); ?>" min="1" max="50" class="small-text" /></label>
+					<label><?php esc_html_e( 'Requests shown', 'personalized-city-tour' ); ?> <input type="number" name="requests_per_page" value="<?php echo esc_attr( $vibe['requests_per_page'] ); ?>" min="5" max="200" class="small-text" /></label>
+					<label><?php esc_html_e( 'SMS outbox shown', 'personalized-city-tour' ); ?> <input type="number" name="outbox_per_page" value="<?php echo esc_attr( $vibe['outbox_per_page'] ); ?>" min="5" max="200" class="small-text" /></label>
 					<label><?php esc_html_e( 'Image size', 'personalized-city-tour' ); ?>
 						<select name="image_size">
 							<?php foreach ( array( '1024x1024', '1024x1536', '1536x1024', '512x512' ) as $size ) : ?>

@@ -55,7 +55,50 @@ class PCT_Form_Builder {
 		if ( ! is_array( $schema ) || empty( $schema['sections'] ) ) {
 			$schema = self::sanitize_schema( self::default_schema() );
 		}
+		// The saved form schema is a canonical content definition, not a
+		// language-specific copy. Localize its human-facing labels at runtime
+		// so a form saved while the admin was using English does not force the
+		// visitor to see English forever.
+		$schema = self::localize_schema( $schema, PCT_I18n::current() );
 		return apply_filters( 'pct_form_schema', $schema );
+	}
+
+	/**
+	 * Localize only human-facing schema strings; never translate IDs, values,
+	 * condition operators or numeric constraints.
+	 */
+	private static function localize_schema( $schema, $lang ) {
+		$lang = PCT_I18n::normalize( $lang );
+		if ( 'en' === $lang || ! is_array( $schema ) ) {
+			return $schema;
+		}
+		foreach ( (array) ( $schema['sections'] ?? array() ) as $si => $section ) {
+			if ( ! is_array( $section ) ) {
+				continue;
+			}
+			if ( ! empty( $section['title'] ) ) {
+				$schema['sections'][ $si ]['title'] = PCT_I18n::t( $section['title'], $lang );
+			}
+			if ( ! empty( $section['description'] ) ) {
+				$schema['sections'][ $si ]['description'] = PCT_I18n::t( $section['description'], $lang );
+			}
+			foreach ( (array) ( $section['fields'] ?? array() ) as $fi => $field ) {
+				if ( ! is_array( $field ) ) {
+					continue;
+				}
+				foreach ( array( 'label', 'placeholder', 'help' ) as $key ) {
+					if ( ! empty( $field[ $key ] ) ) {
+						$schema['sections'][ $si ]['fields'][ $fi ][ $key ] = PCT_I18n::t( $field[ $key ], $lang );
+					}
+				}
+				foreach ( (array) ( $field['options'] ?? array() ) as $oi => $option ) {
+					if ( is_array( $option ) && ! empty( $option['label'] ) ) {
+						$schema['sections'][ $si ]['fields'][ $fi ]['options'][ $oi ]['label'] = PCT_I18n::t( $option['label'], $lang );
+					}
+				}
+			}
+		}
+		return $schema;
 	}
 
 	public static function save_schema( $schema ) {

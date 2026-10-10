@@ -37,7 +37,9 @@ final class PCT_Plugin {
 		PCT_Guides::init();
 		PCT_Guide_Profiles::init();
 		PCT_SMS::init();
+		PCT_Push::init();
 		PCT_Vibe::init();
+		// PCT_Channel_Intel is stateless; the class is autoloaded on first use.
 
 		if ( is_admin() ) {
 			PCT_Admin::init();

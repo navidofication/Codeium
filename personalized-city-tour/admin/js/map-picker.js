@@ -21,7 +21,22 @@
 	var zoom = (lat !== null) ? 15 : (cityLat !== null ? 12 : 3);
 
 	var map = L.map(canvas, { scrollWheelZoom: false }).setView(center, zoom);
-	L.tileLayer(pctMap.tileUrl, { attribution: pctMap.attribution, maxZoom: 19 }).addTo(map);
+	var tileUrls = [pctMap.tileUrl].concat(pctMap.tileFallbacks || []);
+	var tileAttrs = [pctMap.attribution].concat(pctMap.tileFallbackAttributions || []);
+	var tileIndex = 0;
+	function addTiles() {
+		if (!tileUrls[tileIndex]) { return; }
+		var layer = L.tileLayer(tileUrls[tileIndex], { attribution: tileAttrs[tileIndex] || '', maxZoom: 19 }).addTo(map);
+		var switched = false;
+		layer.on('tileerror', function () {
+			if (switched || tileIndex >= tileUrls.length - 1) { return; }
+			switched = true;
+			map.removeLayer(layer);
+			tileIndex++;
+			addTiles();
+		});
+	}
+	addTiles();
 
 	var marker = null;
 	function place(latlng, pan) {

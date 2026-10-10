@@ -156,3 +156,77 @@
 	.pct-topbar-city { display: none; }
 	.pct-form-table th { width: auto; }
 }
+
+/* 2.1.0 mobile-safe city channels / My Maps repeaters and map picker. */
+.pct-repeater-wrap { width: 100%; max-width: 100%; overflow-x: auto; }
+.pct-repeater { min-width: 620px; }
+.pct-map-picker, .pct-map-picker * { max-width: 100%; }
+.pct-map-canvas { width: 100%; min-width: 0; }
+@media (max-width: 782px) {
+	.pct-repeater-wrap { overflow: visible; }
+	.pct-repeater { min-width: 0; width: 100%; border: 0; box-shadow: none; background: transparent; }
+	.pct-repeater thead { display: none; }
+	.pct-repeater tbody, .pct-repeater tr, .pct-repeater td { display: block; width: 100%; }
+	.pct-repeater tr { margin: 0 0 12px; padding: 10px; border: 1px solid #dcdcde; border-radius: 6px; background: #fff; }
+	.pct-repeater td { padding: 6px 0; border: 0; }
+	.pct-repeater td[data-label]:not([data-label=""])::before { content: attr(data-label); display: block; margin: 0 0 4px; font-weight: 600; color: #50575e; }
+	.pct-repeater input, .pct-repeater select { width: 100% !important; max-width: none !important; }
+	.pct-map-canvas { height: 300px; }
+	.pct-form-table td { width: 100%; }
+}
+
+/* 2.2.0: clear checkbox relationships on narrow admin screens. */
+.pct-checkbox-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+	gap: 8px 14px;
+	margin: 8px 0 10px;
+	max-width: 100%;
+}
+.pct-checkbox-grid label {
+	display: flex;
+	align-items: flex-start;
+	gap: 7px;
+	margin: 0;
+	padding: 7px 8px;
+	border: 1px solid #dcdcde;
+	border-radius: 5px;
+	background: #fff;
+	line-height: 1.4;
+	box-sizing: border-box;
+}
+.pct-checkbox-grid input[type="checkbox"] { flex: 0 0 auto; margin: 2px 0 0; }
+.pct-push-test-form { margin-top: 10px; }
+@media (max-width: 782px) {
+	.pct-checkbox-grid { grid-template-columns: 1fr; gap: 7px; }
+	.pct-checkbox-grid label { width: 100%; min-height: 40px; align-items: center; }
+	.pct-ai-fields-grid label span, .pct-roles-grid label span { flex: 1; min-width: 0; }
+	.pct-push-test-form { align-items: flex-start; flex-direction: column; }
+	.pct-push-test-form .description { display: block; line-height: 1.5; }
+	.pct-vibe-admin .form-table th,
+	.pct-vibe-admin .form-table td { display: block; width: 100%; box-sizing: border-box; }
+	.pct-vibe-admin .form-table th { padding-bottom: 4px; }
+}
+
+
+/* 2.2.1: administrator-only browser notification controls. */
+.pct-push-admin-box { margin: 18px 0 24px; padding: 16px 18px; border: 1px solid #c3c4c7; border-radius: 6px; background: #fff; max-width: 1000px; box-sizing: border-box; }
+.pct-push-admin-box h2 { margin-top: 0; }
+.pct-push-permission-admin { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
+.pct-push-permission-admin input { margin: 0; }
+#pct-push-status { min-height: 1.5em; margin: 7px 0 4px; }
+#pct-push-status.pct-push-status-error { color: #b32d2e; }
+
+
+/* 2.2.5: My Trip / My Vibe admin table ergonomics. */
+.pct-vibe-table-scroll { max-width: 100%; max-height: 620px; overflow: auto; border: 1px solid #dcdcde; background: #fff; }
+.pct-vibe-table-scroll table { margin: 0; min-width: 980px; }
+.pct-sms-outbox-scroll table { min-width: 760px; }
+.pct-vibe-admin .pct-admin-count-badge { display: inline-block; min-width: 1.7em; padding: 2px 7px; border-radius: 999px; background: #f0f0f1; color: #50575e; font-size: 12px; vertical-align: middle; text-align: center; }
+.pct-vibe-admin .pct-actions .pct-inline-form { display: inline-block; margin: 0 4px 4px 0; }
+@media (max-width: 782px) { .pct-vibe-table-scroll { max-height: 520px; } .pct-vibe-table-scroll table { min-width: 900px; } }
+
+.pct-mymap-cache-ok { color: #2271b1; }
+.pct-mymap-cache-stale { color: #996800; }
+.pct-mymap-cache-error { color: #b32d2e; }
+.pct-mymap-refresh-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 16px; }

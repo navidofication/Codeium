@@ -81,8 +81,8 @@ $tab_url = function ( $key ) {
 			</tr>
 			<tr>
 				<th scope="row"><label for="pct_stops_per_day"><?php esc_html_e( 'Suggested stops per day', 'personalized-city-tour' ); ?></label></th>
-				<td><input type="number" id="pct_stops_per_day" name="pct_settings[stops_per_day]" value="<?php echo esc_attr( $settings['stops_per_day'] ); ?>" min="1" max="8" class="small-text" />
-				<p class="description"><?php esc_html_e( 'Adjusted automatically by the traveller’s chosen pace.', 'personalized-city-tour' ); ?></p></td>
+				<td><input type="number" id="pct_stops_per_day" name="pct_settings[stops_per_day]" value="<?php echo esc_attr( $settings['stops_per_day'] ); ?>" min="1" max="18" class="small-text" />
+				<p class="description"><?php esc_html_e( 'Upper suggested-stop ceiling per day; the traveller’s pace, time window and route quality may reduce the actual number.', 'personalized-city-tour' ); ?></p></td>
 			</tr>
 			<tr>
 				<th scope="row"><?php esc_html_e( 'Calendar', 'personalized-city-tour' ); ?></th>
@@ -102,9 +102,11 @@ $tab_url = function ( $key ) {
 			<tr>
 				<th scope="row"><?php esc_html_e( 'Roles with access', 'personalized-city-tour' ); ?></th>
 				<td>
-					<?php foreach ( wp_roles()->roles as $role_key => $role ) : ?>
-						<label class="pct-inline"><input type="checkbox" name="pct_settings[analytics_roles][]" value="<?php echo esc_attr( $role_key ); ?>" <?php checked( in_array( $role_key, (array) $settings['analytics_roles'], true ) || 'administrator' === $role_key ); ?> <?php disabled( 'administrator' === $role_key ); ?> /> <?php echo esc_html( translate_user_role( $role['name'] ) ); ?></label>
-					<?php endforeach; ?>
+					<div class="pct-checkbox-grid pct-roles-grid">
+						<?php foreach ( wp_roles()->roles as $role_key => $role ) : ?>
+							<label><input type="checkbox" name="pct_settings[analytics_roles][]" value="<?php echo esc_attr( $role_key ); ?>" <?php checked( in_array( $role_key, (array) $settings['analytics_roles'], true ) || 'administrator' === $role_key ); ?> <?php disabled( 'administrator' === $role_key ); ?> /> <span><?php echo esc_html( translate_user_role( $role['name'] ) ); ?></span></label>
+						<?php endforeach; ?>
+					</div>
 					<p class="description"><?php esc_html_e( 'Only these roles see the Analytics menu and can request analyses or download exports. Every action is written to the AI audit log.', 'personalized-city-tour' ); ?></p>
 				</td>
 			</tr>
@@ -116,7 +118,7 @@ $tab_url = function ( $key ) {
 		<?php endif; ?>
 
 		<?php if ( 'ai' === $tab ) : ?>
-		<p class="description"><?php esc_html_e( 'The AI analyses the submitted travel preference form and composes tour options strictly from your city database. Responses are validated against a strict JSON schema; invalid answers are logged and retried once with the validation errors. Without a provider (or when the AI fails) the built-in rule based planner is used.', 'personalized-city-tour' ); ?></p>
+		<p class="description"><?php esc_html_e( 'The AI analyses the submitted travel preference form, your Cities / City data / Events records and (for OpenAI) can perform a small live web search to enrich current facts. Responses are validated against a strict JSON schema; invalid answers are logged and retried once. Without a provider (or when the AI fails) the built-in rule based planner is used.', 'personalized-city-tour' ); ?></p>
 		<table class="form-table" role="presentation">
 			<tr>
 				<th scope="row"><label for="pct_ai_provider"><?php esc_html_e( 'Provider', 'personalized-city-tour' ); ?></label></th>
@@ -204,13 +206,25 @@ $tab_url = function ( $key ) {
 				</td>
 			</tr>
 			<tr>
+				<th scope="row"><?php esc_html_e( 'Web research', 'personalized-city-tour' ); ?></th>
+				<td><label><input type="checkbox" name="pct_settings[ai_web_search]" value="1" <?php checked( $settings['ai_web_search'] ); ?> /> <?php esc_html_e( 'Allow the OpenAI tour planner to use a small live web search for current facts, opening status, official links and practical notes about the supplied city candidates', 'personalized-city-tour' ); ?></label>
+				<p class="description"><?php esc_html_e( 'This uses OpenAI Responses + web_search when the selected provider is OpenAI. The curated city database and Google My Maps remain the primary source for route stops; web results enrich current details rather than silently replacing your curated database.', 'personalized-city-tour' ); ?></p></td>
+			</tr>
+			<tr>
+				<th scope="row"><?php esc_html_e( 'City Channels intelligence', 'personalized-city-tour' ); ?></th>
+				<td><label><input type="checkbox" name="pct_settings[channel_intel_enabled]" value="1" <?php checked( $settings['channel_intel_enabled'] ); ?> /> <?php esc_html_e( 'Read public City Channel pages and use high-confidence current events as optional tour candidates', 'personalized-city-tour' ); ?></label>
+				<p class="description"><?php esc_html_e( 'Only URLs explicitly saved under Cities → City Channels are fetched. The plugin uses public pages/structured data, caches results, never logs in or bypasses private content, and only promotes items with enough location/date evidence for safe tour use.', 'personalized-city-tour' ); ?></p></td>
+			</tr>
+			<tr>
 				<th scope="row"><?php esc_html_e( 'Privacy & consent', 'personalized-city-tour' ); ?></th>
 				<td>
 					<label><input type="checkbox" name="pct_settings[ai_consent_city_db]" value="1" <?php checked( $settings['ai_consent_city_db'] ); ?> /> <strong><?php esc_html_e( 'I allow city database content (places, events, channels) to be sent to the selected AI provider', 'personalized-city-tour' ); ?></strong></label>
 					<p class="description"><?php esc_html_e( 'Required for AI tour generation. Only the fields ticked below are transmitted.', 'personalized-city-tour' ); ?></p>
-					<?php foreach ( PCT_Tour_Generator::extract_fields() as $fk => $fl ) : ?>
-						<label class="pct-inline"><input type="checkbox" name="pct_settings[ai_allowed_fields][]" value="<?php echo esc_attr( $fk ); ?>" <?php checked( in_array( $fk, (array) $settings['ai_allowed_fields'], true ) ); ?> /> <?php echo esc_html( $fl ); ?></label>
-					<?php endforeach; ?>
+					<div class="pct-checkbox-grid pct-ai-fields-grid">
+						<?php foreach ( PCT_Tour_Generator::extract_fields() as $fk => $fl ) : ?>
+							<label><input type="checkbox" name="pct_settings[ai_allowed_fields][]" value="<?php echo esc_attr( $fk ); ?>" <?php checked( in_array( $fk, (array) $settings['ai_allowed_fields'], true ) ); ?> /> <span><?php echo esc_html( $fl ); ?></span></label>
+						<?php endforeach; ?>
+					</div>
 					<br>
 					<fieldset class="pct-consent-links">
 						<legend><?php esc_html_e( 'Send city database — access links', 'personalized-city-tour' ); ?></legend>
@@ -267,7 +281,7 @@ $tab_url = function ( $key ) {
 			<tr>
 				<th scope="row"><label for="pct_ai_prompt_template"><?php esc_html_e( 'Extra prompt instructions', 'personalized-city-tour' ); ?></label></th>
 				<td><textarea id="pct_ai_prompt_template" name="pct_settings[ai_prompt_template]" rows="4" class="large-text"><?php echo esc_textarea( $settings['ai_prompt_template'] ); ?></textarea>
-				<p class="description"><?php esc_html_e( 'Appended to the system prompt (tone, house rules, must-mention info). Planner rules are added automatically.', 'personalized-city-tour' ); ?></p></td>
+				<p class="description"><?php esc_html_e( 'Controls AI-generated tour content and tone, not the frontend layout. Supported placeholders: {city}, {country}, {lang}, {lang_name}. Planner rules, data-safety rules and the required JSON schema are added automatically.', 'personalized-city-tour' ); ?></p></td>
 			</tr>
 			<tr>
 				<th scope="row"></th>
@@ -298,9 +312,11 @@ $tab_url = function ( $key ) {
 			<tr>
 				<th scope="row"><?php esc_html_e( 'Languages offered to visitors', 'personalized-city-tour' ); ?></th>
 				<td>
-					<?php foreach ( $langs as $code => $meta ) : ?>
-						<label class="pct-inline"><input type="checkbox" name="pct_settings[enabled_languages][]" value="<?php echo esc_attr( $code ); ?>" <?php checked( in_array( $code, (array) $settings['enabled_languages'], true ) ); ?> /> <?php echo esc_html( $meta['label'] ); ?><?php echo $meta['rtl'] ? ' <small>(RTL)</small>' : ''; ?></label>
-					<?php endforeach; ?>
+					<div class="pct-checkbox-grid pct-languages-grid">
+						<?php foreach ( $langs as $code => $meta ) : ?>
+							<label><input type="checkbox" name="pct_settings[enabled_languages][]" value="<?php echo esc_attr( $code ); ?>" <?php checked( in_array( $code, (array) $settings['enabled_languages'], true ) ); ?> /> <span><?php echo esc_html( $meta['label'] ); ?><?php echo $meta['rtl'] ? ' <small>(RTL)</small>' : ''; ?></span></label>
+						<?php endforeach; ?>
+					</div>
 				</td>
 			</tr>
 			<tr>
@@ -347,7 +363,8 @@ $tab_url = function ( $key ) {
 			<tr>
 				<th scope="row"><?php esc_html_e( 'Route calculation', 'personalized-city-tour' ); ?></th>
 				<td>
-					<label><input type="radio" name="pct_settings[routing_provider]" value="osrm" <?php checked( $settings['routing_provider'], 'osrm' ); ?> /> <?php esc_html_e( 'OSRM (open source, walking / cycling / driving)', 'personalized-city-tour' ); ?></label><br>
+					<label><input type="radio" name="pct_settings[routing_provider]" value="osrm" <?php checked( $settings['routing_provider'], 'osrm' ); ?> /> <?php esc_html_e( 'OSRM (open source, walking / cycling / driving if server profiles exist)', 'personalized-city-tour' ); ?></label><br>
+					<label><input type="radio" name="pct_settings[routing_provider]" value="valhalla" <?php checked( $settings['routing_provider'], 'valhalla' ); ?> /> <?php esc_html_e( 'Valhalla (pedestrian / bicycle / car / multimodal transit)', 'personalized-city-tour' ); ?></label><br>
 					<label><input type="radio" name="pct_settings[routing_provider]" value="mapbox" <?php checked( $settings['routing_provider'], 'mapbox' ); ?> /> <?php esc_html_e( 'Mapbox Directions', 'personalized-city-tour' ); ?></label><br>
 					<label><input type="radio" name="pct_settings[routing_provider]" value="google" <?php checked( $settings['routing_provider'], 'google' ); ?> /> <?php esc_html_e( 'Google Directions (supports transit)', 'personalized-city-tour' ); ?></label><br>
 					<label><input type="radio" name="pct_settings[routing_provider]" value="straight" <?php checked( $settings['routing_provider'], 'straight' ); ?> /> <?php esc_html_e( 'Straight lines only (no external routing service)', 'personalized-city-tour' ); ?></label>
@@ -357,7 +374,12 @@ $tab_url = function ( $key ) {
 			<tr>
 				<th scope="row"><label for="pct_osrm_endpoint"><?php esc_html_e( 'OSRM endpoint', 'personalized-city-tour' ); ?></label></th>
 				<td><input type="url" id="pct_osrm_endpoint" name="pct_settings[osrm_endpoint]" value="<?php echo esc_attr( $settings['osrm_endpoint'] ); ?>" class="large-text" />
-				<p class="description"><?php esc_html_e( 'The public demo server is fine for testing; use your own OSRM instance in production.', 'personalized-city-tour' ); ?></p></td>
+				<p class="description"><?php esc_html_e( 'The public OSRM demo commonly exposes driving only. Walking and cycling require an OSRM server built with matching profiles; OSRM does not provide transit itineraries.', 'personalized-city-tour' ); ?></p></td>
+			</tr>
+			<tr>
+				<th scope="row"><label for="pct_valhalla_endpoint"><?php esc_html_e( 'Valhalla endpoint', 'personalized-city-tour' ); ?></label></th>
+				<td><input type="url" id="pct_valhalla_endpoint" name="pct_settings[valhalla_endpoint]" value="<?php echo esc_attr( $settings['valhalla_endpoint'] ?? 'https://valhalla1.openstreetmap.de' ); ?>" class="large-text" />
+				<p class="description"><?php esc_html_e( 'For testing, the public FOSSGIS demo supports pedestrian, bicycle, car and multimodal routing but is rate-limited and governed by fair-use rules. For a public production service, use a suitable hosted/self-managed instance and identify your client. The plugin sends an X-Client-Id header.', 'personalized-city-tour' ); ?></p></td>
 			</tr>
 			<tr>
 				<th scope="row"><label for="pct_google_maps_api_key"><?php esc_html_e( 'Google Maps API key', 'personalized-city-tour' ); ?></label></th>
@@ -457,6 +479,10 @@ $tab_url = function ( $key ) {
 			</tr>
 		</table>
 		<?php $drive_log = PCT_Drive::log(); ?>
+		<?php $oauth_last = get_option( 'pct_drive_oauth_last', array() ); ?>
+		<?php if ( ! empty( $oauth_last['detail'] ) ) : ?>
+			<p class="description"><strong><?php esc_html_e( 'Last OAuth diagnostic:', 'personalized-city-tour' ); ?></strong> <?php echo esc_html( $oauth_last['detail'] ); ?><?php if ( ! empty( $oauth_last['time'] ) ) : ?> — <?php echo esc_html( wp_date( 'Y-m-d H:i:s', (int) $oauth_last['time'] ) ); ?><?php endif; ?></p>
+		<?php endif; ?>
 		<?php if ( $drive_log ) : ?>
 			<h2><?php esc_html_e( 'Recent exports', 'personalized-city-tour' ); ?></h2>
 			<table class="widefat striped">
@@ -514,20 +540,56 @@ $tab_url = function ( $key ) {
 				<th scope="row"><label for="pct_image_provider"><?php esc_html_e( 'Provider', 'personalized-city-tour' ); ?></label></th>
 				<td>
 					<select id="pct_image_provider" name="pct_settings[image_provider]">
+						<option value="pollinations" <?php selected( $settings['image_provider'], 'pollinations' ); ?>><?php esc_html_e( 'Pollinations (recommended)', 'personalized-city-tour' ); ?></option>
+						<option value="huggingface" <?php selected( $settings['image_provider'], 'huggingface' ); ?>><?php esc_html_e( 'Hugging Face', 'personalized-city-tour' ); ?></option>
+						<option value="gemini" <?php selected( $settings['image_provider'], 'gemini' ); ?>><?php esc_html_e( 'Google Gemini / Nano Banana 2', 'personalized-city-tour' ); ?></option>
+						<option value="higgsfield" <?php selected( $settings['image_provider'], 'higgsfield' ); ?>><?php esc_html_e( 'Higgsfield API', 'personalized-city-tour' ); ?></option>
 						<option value="mock" <?php selected( $settings['image_provider'], 'mock' ); ?>><?php esc_html_e( 'Sandbox (generated SVG placeholder)', 'personalized-city-tour' ); ?></option>
-						<option value="openai" <?php selected( $settings['image_provider'], 'openai' ); ?>><?php esc_html_e( 'OpenAI Images (gpt-image-1 / DALL·E)', 'personalized-city-tour' ); ?></option>
+						<option value="openai" <?php selected( $settings['image_provider'], 'openai' ); ?>><?php esc_html_e( 'OpenAI Images (paid)', 'personalized-city-tour' ); ?></option>
 						<option value="custom" <?php selected( $settings['image_provider'], 'custom' ); ?>><?php esc_html_e( 'Custom OpenAI-compatible images endpoint', 'personalized-city-tour' ); ?></option>
 					</select>
-					<input type="text" name="pct_settings[image_model]" value="<?php echo esc_attr( $settings['image_model'] ); ?>" class="regular-text" placeholder="gpt-image-1" />
+					<input type="text" name="pct_settings[image_model]" value="<?php echo esc_attr( $settings['image_model'] ); ?>" class="regular-text" placeholder="gpt-image-2.5-sunburst" />
+					<p><label><?php esc_html_e( 'Gemini image model', 'personalized-city-tour' ); ?> <input type="text" name="pct_settings[image_gemini_model]" value="<?php echo esc_attr( $settings['image_gemini_model'] ); ?>" class="regular-text" placeholder="gemini-3.1-flash-image" /></label></p>
+					<p><label><?php esc_html_e( 'Higgsfield image model', 'personalized-city-tour' ); ?> <input type="text" name="pct_settings[image_higgsfield_model]" value="<?php echo esc_attr( $settings['image_higgsfield_model'] ); ?>" class="regular-text" placeholder="z-image/turbo" /></label></p>
+					<p class="description"><?php esc_html_e( 'For OpenAI Images use a GPT Image model such as gpt-image-2.5-sunburst or gpt-image-2.5-flare. When a visitor uploads a reference photo, the plugin uses the OpenAI image edits endpoint. Pollinations uses its own image API. Nano Banana uses Google Gemini image generation. Higgsfield uses its server-side Key ID + Secret and asynchronous image queue. For reference-photo requests, OpenAI Images is used directly so the uploaded file is actually sent to the image edit API. For text-only requests, if fallback is enabled, the plugin tries the selected provider, then Pollinations, then Hugging Face, then Sandbox.', 'personalized-city-tour' ); ?></p>
 				</td>
+			</tr>
+			<tr>
+				<th scope="row"><?php esc_html_e( 'Reference-photo mode', 'personalized-city-tour' ); ?></th>
+				<td><p class="description"><?php esc_html_e( 'When a visitor uploads a photo, the plugin sends that exact file to OpenAI Images /images/edits so the result is based on the uploaded people and composition. Text-only providers are not used for reference-photo requests.', 'personalized-city-tour' ); ?></p></td>
 			</tr>
 			<tr>
 				<th scope="row"><label for="pct_image_endpoint"><?php esc_html_e( 'Endpoint', 'personalized-city-tour' ); ?></label></th>
 				<td><input type="url" id="pct_image_endpoint" name="pct_settings[image_endpoint]" value="<?php echo esc_attr( $settings['image_endpoint'] ); ?>" class="large-text" /></td>
 			</tr>
 			<tr>
-				<th scope="row"><label for="pct_image_api_key"><?php esc_html_e( 'Image API key', 'personalized-city-tour' ); ?></label></th>
-				<td><?php $secret_field( 'image_api_key', 'pct_image_api_key', __( 'Leave empty to reuse the AI provider key.', 'personalized-city-tour' ) ); ?></td>
+				<th scope="row"><label for="pct_image_api_key"><?php esc_html_e( 'Primary image API key', 'personalized-city-tour' ); ?></label></th>
+				<td><?php $secret_field( 'image_api_key', 'pct_image_api_key', __( 'Used by Pollinations/OpenAI/custom. Stored encrypted. Do not put your Groq key here unless the selected image endpoint is intentionally the same provider.', 'personalized-city-tour' ) ); ?></td>
+			</tr>
+			<tr>
+				<th scope="row"><label for="pct_image_gemini_api_key"><?php esc_html_e( 'Gemini / Nano Banana API key', 'personalized-city-tour' ); ?></label></th>
+				<td><?php $secret_field( 'image_gemini_api_key', 'pct_image_gemini_api_key', __( 'Google AI API key for Nano Banana. Stored encrypted and used only for the Gemini image provider.', 'personalized-city-tour' ) ); ?></td>
+			</tr>
+			<tr>
+				<th scope="row"><label for="pct_image_higgsfield_key_id"><?php esc_html_e( 'Higgsfield API Key ID', 'personalized-city-tour' ); ?></label></th>
+				<td><?php $secret_field( 'image_higgsfield_key_id', 'pct_image_higgsfield_key_id', __( 'Higgsfield API Key ID. Stored encrypted.', 'personalized-city-tour' ) ); ?></td>
+			</tr>
+			<tr>
+				<th scope="row"><label for="pct_image_higgsfield_key_secret"><?php esc_html_e( 'Higgsfield API Key Secret', 'personalized-city-tour' ); ?></label></th>
+				<td><?php $secret_field( 'image_higgsfield_key_secret', 'pct_image_higgsfield_key_secret', __( 'Higgsfield API Key Secret. Stored encrypted. Never expose it in frontend JavaScript.', 'personalized-city-tour' ) ); ?></td>
+			</tr>
+			<tr>
+				<th scope="row"><label for="pct_image_hf_api_key"><?php esc_html_e( 'Hugging Face fallback API key', 'personalized-city-tour' ); ?></label></th>
+				<td><?php $secret_field( 'image_hf_api_key', 'pct_image_hf_api_key', __( 'Optional. A Hugging Face token with Inference Providers permission. It is used only when the primary/Pollinations provider fails.', 'personalized-city-tour' ) ); ?></td>
+			</tr>
+			<tr>
+				<th scope="row"><label for="pct_image_hf_model"><?php esc_html_e( 'Hugging Face fallback model', 'personalized-city-tour' ); ?></label></th>
+				<td><input type="text" id="pct_image_hf_model" name="pct_settings[image_hf_model]" value="<?php echo esc_attr( $settings['image_hf_model'] ); ?>" class="large-text" />
+				<p class="description"><?php esc_html_e( 'Default: black-forest-labs/FLUX.1-schnell. Availability can change; the fallback is skipped if no HF key is configured.', 'personalized-city-tour' ); ?></p></td>
+			</tr>
+			<tr>
+				<th scope="row"><?php esc_html_e( 'Automatic fallback', 'personalized-city-tour' ); ?></th>
+				<td><label><input type="checkbox" name="pct_settings[image_fallback_enabled]" value="1" <?php checked( $settings['image_fallback_enabled'] ); ?> /> <?php esc_html_e( 'If generation fails, try Pollinations, then Hugging Face, then the Sandbox placeholder.', 'personalized-city-tour' ); ?></label></td>
 			</tr>
 			<tr>
 				<th scope="row"></th>

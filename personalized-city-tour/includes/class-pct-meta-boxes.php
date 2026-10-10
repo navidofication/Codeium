@@ -90,6 +90,10 @@ class PCT_Meta_Boxes {
 			$v = get_post_meta( $post->ID, $k, true );
 			return '' === $v ? $d : $v;
 		};
+		if ( isset( $_GET['pct_mymap_refresh'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$refresh = sanitize_text_field( wp_unslash( $_GET['pct_mymap_refresh'] ) ); // phpcs:ignore WordPress.Security.NonceVerification
+			echo '<div class="notice notice-info inline"><p>' . esc_html( sprintf( __( 'My Maps KML database refresh result: %s.', 'personalized-city-tour' ), $refresh ) ) . '</p></div>';
+		}
 		echo '<table class="form-table pct-form-table">';
 		self::field( '_pct_country', __( 'Country', 'personalized-city-tour' ), self::text( '_pct_country', $m( '_pct_country' ) ) );
 		self::field( '_pct_timezone', __( 'Time zone', 'personalized-city-tour' ), self::text( '_pct_timezone', $m( '_pct_timezone' ) ), __( 'e.g. Europe/Rome', 'personalized-city-tour' ) );
@@ -98,6 +102,8 @@ class PCT_Meta_Boxes {
 		self::field( '_pct_zoom', __( 'Default zoom', 'personalized-city-tour' ), self::text( '_pct_zoom', $m( '_pct_zoom', 13 ), 'number', 'min="3" max="19"' ) );
 		self::field( 'pct_map', __( 'Map position', 'personalized-city-tour' ), self::map_picker( $m( '_pct_lat' ), $m( '_pct_lng' ) ) );
 		self::field( '_pct_gmaps_url', __( 'Google Maps location link', 'personalized-city-tour' ), self::text( '_pct_gmaps_url', $m( '_pct_gmaps_url' ), 'url', 'class="large-text" dir="ltr"' ), __( 'Public Google Maps link of the city (https://maps.app.goo.gl/… or https://www.google.com/maps/place/…). Used as fallback for "Open in Google Maps".', 'personalized-city-tour' ) );
+		self::field( '_pct_ar_url', __( 'Augmented reality service link', 'personalized-city-tour' ), self::text( '_pct_ar_url', $m( '_pct_ar_url' ), 'url', 'class="large-text" dir="ltr"' ), __( 'Optional public AR experience URL for this city. It can point to your own AR web app or a compatible AR service; no app download is assumed.', 'personalized-city-tour' ) );
+		self::field( '_pct_ar_label', __( 'AR button label', 'personalized-city-tour' ), self::text( '_pct_ar_label', $m( '_pct_ar_label', __( 'Augmented reality', 'personalized-city-tour' ) ) ), __( 'Optional label shown to visitors.', 'personalized-city-tour' ) );
 		echo '</table>';
 
 		echo '<h3>' . esc_html__( 'City Channels', 'personalized-city-tour' ) . '</h3>';
@@ -105,8 +111,28 @@ class PCT_Meta_Boxes {
 		self::links_repeater( 'pct-channels', '_pct_channels', (array) get_post_meta( $post->ID, '_pct_channels', true ), __( 'Channel URL', 'personalized-city-tour' ), __( 'Add another channel', 'personalized-city-tour' ) );
 
 		echo '<h3>' . esc_html__( 'Google My Maps', 'personalized-city-tour' ) . '</h3>';
-		echo '<p class="description">' . esc_html__( 'Paste share links of customised Google My Maps for this city (https://www.google.com/maps/d/…?mid=…). They are offered to travellers next to their route.', 'personalized-city-tour' ) . '</p>';
+		echo '<p class="description">' . esc_html__( 'Paste share links of customised Google My Maps for this city (https://www.google.com/maps/d/…?mid=…). They are used as curated route sources; public map links are shown only when the public My Maps setting is enabled.', 'personalized-city-tour' ) . '</p>';
 		self::links_repeater( 'pct-mymaps', '_pct_mymaps', (array) get_post_meta( $post->ID, '_pct_mymaps', true ), __( 'My Maps URL', 'personalized-city-tour' ), __( 'Add another map', 'personalized-city-tour' ) );
+		$map_rows = PCT_Data::mymaps( $post->ID );
+		if ( $map_rows ) {
+			foreach ( $map_rows as $map_row ) {
+				$cache = PCT_Data::mymap_cache_status( $map_row['url'] );
+				if ( ! empty( $cache['available'] ) ) {
+					$when = ! empty( $cache['cached_at'] ) ? wp_date( 'Y-m-d H:i', (int) $cache['cached_at'] ) : '';
+					$class = ! empty( $cache['stale'] ) ? 'pct-mymap-cache-stale' : 'pct-mymap-cache-ok';
+					$count = isset( $cache['feature_count'] ) ? absint( $cache['feature_count'] ) : 0;
+					echo '<p class="description ' . esc_attr( $class ) . '">' . esc_html( sprintf( __( 'KML database: cached%s%s · %d map features.', 'personalized-city-tour' ), $when ? ' · ' . $when : '', ! empty( $cache['stale'] ) ? ' · ' . __( 'update recommended', 'personalized-city-tour' ) : '', $count ) ) . '</p>';
+				} else {
+					echo '<p class="description pct-mymap-cache-error">' . esc_html__( 'KML database: not cached yet. Refresh it after making the map public.', 'personalized-city-tour' ) . '</p>';
+				}
+			}
+			?>
+			<div class="pct-inline-form pct-mymap-refresh-form">
+				<button type="button" class="button pct-mymap-refresh" data-city-id="<?php echo (int) $post->ID; ?>" data-action-url="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" data-nonce="<?php echo esc_attr( wp_create_nonce( 'pct_refresh_mymaps' ) ); ?>"><?php esc_html_e( 'Update KML database now', 'personalized-city-tour' ); ?></button>
+				<span class="description"><?php esc_html_e( 'The plugin downloads the public KML/KMZ export once and then uses the local cache for tour generation. Save the city first if you have just changed its My Maps URLs.', 'personalized-city-tour' ); ?></span>
+			</div>
+			<?php
+		}
 	}
 
 	/**
@@ -115,13 +141,13 @@ class PCT_Meta_Boxes {
 	private static function links_repeater( $id, $key, array $rows, $url_label, $add_label ) {
 		$rows = array_values( array_filter( $rows, function ( $r ) { return ! empty( $r['url'] ); } ) );
 		$rows[] = array( 'label' => '', 'url' => '' );
-		echo '<table class="widefat pct-repeater" id="' . esc_attr( $id ) . '"><thead><tr><th>' . esc_html__( 'Label', 'personalized-city-tour' ) . '</th><th>' . esc_html( $url_label ) . '</th><th></th></tr></thead><tbody>';
+		echo '<div class="pct-repeater-wrap"><table class="widefat pct-repeater" id="' . esc_attr( $id ) . '"><thead><tr><th>' . esc_html__( 'Label', 'personalized-city-tour' ) . '</th><th>' . esc_html( $url_label ) . '</th><th></th></tr></thead><tbody>';
 		foreach ( $rows as $i => $row ) {
-			echo '<tr><td><input type="text" name="' . esc_attr( $key ) . '[' . (int) $i . '][label]" value="' . esc_attr( (string) ( $row['label'] ?? '' ) ) . '" class="regular-text" /></td>'
-				. '<td><input type="url" name="' . esc_attr( $key ) . '[' . (int) $i . '][url]" value="' . esc_attr( (string) ( $row['url'] ?? '' ) ) . '" class="large-text" dir="ltr" /></td>'
-				. '<td><button type="button" class="button-link-delete pct-repeater-remove">' . esc_html__( 'Remove', 'personalized-city-tour' ) . '</button></td></tr>';
+			echo '<tr><td data-label="' . esc_attr__( 'Label', 'personalized-city-tour' ) . '"><input type="text" name="' . esc_attr( $key ) . '[' . (int) $i . '][label]" value="' . esc_attr( (string) ( $row['label'] ?? '' ) ) . '" class="regular-text" /></td>'
+				. '<td data-label="' . esc_attr( $url_label ) . '"><input type="url" name="' . esc_attr( $key ) . '[' . (int) $i . '][url]" value="' . esc_attr( (string) ( $row['url'] ?? '' ) ) . '" class="large-text" dir="ltr" /></td>'
+				. '<td data-label=""><button type="button" class="button-link-delete pct-repeater-remove">' . esc_html__( 'Remove', 'personalized-city-tour' ) . '</button></td></tr>';
 		}
-		echo '</tbody></table><p><button type="button" class="button pct-repeater-add" data-target="' . esc_attr( $id ) . '">' . esc_html( $add_label ) . '</button></p>';
+		echo '</tbody></table></div><p><button type="button" class="button pct-repeater-add" data-target="' . esc_attr( $id ) . '">' . esc_html( $add_label ) . '</button></p>';
 	}
 
 	/**
@@ -157,6 +183,8 @@ class PCT_Meta_Boxes {
 		self::field( 'pct_map', __( 'Map position', 'personalized-city-tour' ), self::map_picker( $m( '_pct_lat' ), $m( '_pct_lng' ), $city_id ) );
 		self::field( '_pct_gmaps_url', __( 'Google Maps location link', 'personalized-city-tour' ), self::text( '_pct_gmaps_url', $m( '_pct_gmaps_url' ), 'url', 'class="large-text" dir="ltr"' ), __( 'Share link from Google Maps for this exact location; travellers get it as "Open in Google Maps".', 'personalized-city-tour' ) );
 		self::field( '_pct_link', __( 'Official link', 'personalized-city-tour' ), self::text( '_pct_link', $m( '_pct_link' ), 'url', 'class="large-text"' ) );
+		self::field( '_pct_ar_url', __( 'Augmented reality service link', 'personalized-city-tour' ), self::text( '_pct_ar_url', $m( '_pct_ar_url' ), 'url', 'class="large-text" dir="ltr"' ), __( 'Optional public AR experience URL for this place.', 'personalized-city-tour' ) );
+		self::field( '_pct_ar_label', __( 'AR button label', 'personalized-city-tour' ), self::text( '_pct_ar_label', $m( '_pct_ar_label', __( 'Augmented reality', 'personalized-city-tour' ) ) ) );
 		self::field( '_pct_price_tier', __( 'Price tier', 'personalized-city-tour' ), self::select( '_pct_price_tier', $m( '_pct_price_tier' ), PCT_Data::price_tiers(), __( '— unknown —', 'personalized-city-tour' ) ) );
 		self::field( '_pct_accessibility', __( 'Accessibility', 'personalized-city-tour' ), self::checkboxes( '_pct_accessibility', (array) $m( '_pct_accessibility', array() ), PCT_Data::accessibility_options() ) );
 	}
@@ -190,6 +218,8 @@ class PCT_Meta_Boxes {
 		self::field( '_pct_organizer_name', __( 'Organizer', 'personalized-city-tour' ), self::text( '_pct_organizer_name', $m( '_pct_organizer_name' ) ) );
 		self::field( '_pct_organizer_url', __( 'Organizer link', 'personalized-city-tour' ), self::text( '_pct_organizer_url', $m( '_pct_organizer_url' ), 'url', 'class="large-text"' ) );
 		self::field( '_pct_event_url', __( 'Public event page', 'personalized-city-tour' ), self::text( '_pct_event_url', $m( '_pct_event_url' ), 'url', 'class="large-text"' ) );
+		self::field( '_pct_ar_url', __( 'Augmented reality service link', 'personalized-city-tour' ), self::text( '_pct_ar_url', $m( '_pct_ar_url' ), 'url', 'class="large-text" dir="ltr"' ), __( 'Optional public AR experience URL for this event.', 'personalized-city-tour' ) );
+		self::field( '_pct_ar_label', __( 'AR button label', 'personalized-city-tour' ), self::text( '_pct_ar_label', $m( '_pct_ar_label', __( 'Augmented reality', 'personalized-city-tour' ) ) ) );
 		self::field( '_pct_venue', __( 'Venue', 'personalized-city-tour' ), self::text( '_pct_venue', $m( '_pct_venue' ) ) );
 		self::render_common_location( $post );
 		self::field( '_pct_duration', __( 'Duration (minutes)', 'personalized-city-tour' ), self::text( '_pct_duration', $m( '_pct_duration' ), 'number', 'min="0" step="5"' ) );
@@ -241,6 +271,8 @@ class PCT_Meta_Boxes {
 		update_post_meta( $post_id, '_pct_lng', PCT_Rest::sanitize_coord( self::post_text( '_pct_lng' ), 180 ) );
 		update_post_meta( $post_id, '_pct_zoom', max( 3, min( 19, absint( self::post_text( '_pct_zoom' ) ?: 13 ) ) ) );
 		update_post_meta( $post_id, '_pct_gmaps_url', esc_url_raw( self::post_text( '_pct_gmaps_url' ) ) );
+		update_post_meta( $post_id, '_pct_ar_url', esc_url_raw( self::post_text( '_pct_ar_url' ) ) );
+		update_post_meta( $post_id, '_pct_ar_label', self::post_text( '_pct_ar_label' ) ?: __( 'Augmented reality', 'personalized-city-tour' ) );
 		update_post_meta( $post_id, '_pct_channels', self::sanitize_links( wp_unslash( $_POST['_pct_channels'] ?? array() ) ) ); // phpcs:ignore WordPress.Security.NonceVerification
 		update_post_meta( $post_id, '_pct_mymaps', self::sanitize_links( wp_unslash( $_POST['_pct_mymaps'] ?? array() ) ) ); // phpcs:ignore WordPress.Security.NonceVerification
 	}
@@ -257,6 +289,8 @@ class PCT_Meta_Boxes {
 			'_pct_lng'           => PCT_Rest::sanitize_coord( self::post_text( '_pct_lng' ), 180 ),
 			'_pct_link'          => esc_url_raw( self::post_text( '_pct_link' ) ),
 			'_pct_gmaps_url'     => esc_url_raw( self::post_text( '_pct_gmaps_url' ) ),
+			'_pct_ar_url'        => esc_url_raw( self::post_text( '_pct_ar_url' ) ),
+			'_pct_ar_label'      => self::post_text( '_pct_ar_label' ) ?: __( 'Augmented reality', 'personalized-city-tour' ),
 			'_pct_socials'       => self::sanitize_links( wp_unslash( $_POST['_pct_socials'] ?? array() ) ), // phpcs:ignore WordPress.Security.NonceVerification
 			'_pct_price_tier'    => array_key_exists( self::post_text( '_pct_price_tier' ), PCT_Data::price_tiers() ) ? self::post_text( '_pct_price_tier' ) : '',
 			'_pct_accessibility' => array_values( $acc ),
@@ -274,6 +308,8 @@ class PCT_Meta_Boxes {
 			$meta['_pct_organizer_name'] = self::post_text( '_pct_organizer_name' );
 			$meta['_pct_organizer_url']  = esc_url_raw( self::post_text( '_pct_organizer_url' ) );
 			$meta['_pct_event_url']      = esc_url_raw( self::post_text( '_pct_event_url' ) );
+			$meta['_pct_ar_url']         = esc_url_raw( self::post_text( '_pct_ar_url' ) );
+			$meta['_pct_ar_label']       = self::post_text( '_pct_ar_label' ) ?: __( 'Augmented reality', 'personalized-city-tour' );
 			$meta['_pct_venue']          = self::post_text( '_pct_venue' );
 		}
 		foreach ( $meta as $k => $v ) {
