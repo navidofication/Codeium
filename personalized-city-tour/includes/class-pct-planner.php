@@ -421,7 +421,8 @@ class PCT_Planner {
 		}
 		$start = $conf['constraints']['day_start'];
 		$end   = $conf['constraints']['day_end'];
-		foreach ( (array) ( $result['days'] ?? array() ) as &$day ) {
+		if ( empty( $result['days'] ) || ! is_array( $result['days'] ) ) { return $result; }
+		foreach ( $result['days'] as &$day ) {
 			if ( ! is_array( $day ) ) {
 				continue;
 			}
