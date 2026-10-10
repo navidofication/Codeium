@@ -80,7 +80,7 @@ class PCT_Maps {
 				$args['waypoints'] = implode( '|', array_map( array( __CLASS__, 'coord' ), $stops ) );
 			}
 		}
-		return add_query_arg( array_map( 'rawurlencode', $args ), 'https://www.google.com/maps/dir/' );
+		return add_query_arg( $args, 'https://www.google.com/maps/dir/' );
 	}
 
 	/**

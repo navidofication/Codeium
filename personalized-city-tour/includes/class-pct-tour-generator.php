@@ -119,6 +119,7 @@ class PCT_Tour_Generator {
 		$per_day  = min( $per_day, (int) PCT_Planner::get()['strategy']['max_stops_per_proposal'] );
 		$per_day  = max( 3, min( 18, $per_day ) );
 		$result   = null;
+		$ai       = null;
 		$provider = 'rules';
 		$warning  = '';
 		$channel_ai_count = 0;
@@ -181,7 +182,8 @@ class PCT_Tour_Generator {
 		$result['source_usage']['city_channel_candidates_local'] = (int) $channel_local_count;
 		$result['source_usage']['city_channel_candidates_ai'] = (int) $channel_ai_count;
 		$result['source_usage']['city_channel_source_report'] = PCT_Channel_Intel::last_report();
-		$result['source_usage']['city_channel_research'] = (array) ( $ai['channel_research'] ?? array() );
+		$ai_research = is_array( $ai ) ? (array) ( $ai['channel_research'] ?? array() ) : array();
+		$result['source_usage']['city_channel_research'] = $ai_research;
 		$result['source_usage']['interest_priority_mode'] = 'soft_blend';
 		$result['source_usage']['interest_weights'] = self::interest_weights( $form );
 		$channel_selected = array();
@@ -230,7 +232,7 @@ class PCT_Tour_Generator {
 					'accepted_candidates' => count( $channel_items ),
 					'route_ready_candidates' => (int) ( $channel_report['route_ready_candidates'] ?? 0 ),
 					'rejected_candidates' => (int) ( $channel_report['rejected_candidates'] ?? 0 ),
-					'channel_research' => (array) ( $ai['channel_research'] ?? array() ),
+					'channel_research' => $ai_research,
 					'proposals_with_city_channel' => (int) ( $result['source_usage']['proposals_with_city_channel'] ?? 0 ),
 					'selected' => $channel_selected,
 					'sources' => $channel_sources,
@@ -366,6 +368,11 @@ class PCT_Tour_Generator {
 			if ( 'low' === $budget && 'high' === $item['price_tier'] ) {
 				continue;
 			}
+			if ( 'event' === ( $item['type'] ?? '' ) && empty( $item['channel_virtual'] ) ) {
+				$has_coords = ! empty( $item['lat'] ) && ! empty( $item['lng'] );
+				$item['location_status']      = $has_coords ? 'verified' : 'needs_location_enrichment';
+				$item['serendipity_eligible'] = ! $has_coords;
+			}
 			$item['score'] = self::score( $item, $form );
 			$filtered[]    = $item;
 		}
@@ -495,16 +502,30 @@ class PCT_Tour_Generator {
 
 	private static function rule_based_plan( array $city, array $form, array $items, $days, $per_day ) {
 		$per_day = max( 3, min( 18, min( (int) $per_day, (int) PCT_Planner::get()['strategy']['max_stops_per_proposal'] ) ) );
-		$pool      = $items;
+		// Only items with coordinates can be route stops; locationless events
+		// stay in $items for Serendipity handling.
+		$routable  = array_values( array_filter( $items, function ( $item ) {
+			return ! empty( $item['lat'] ) && ! empty( $item['lng'] );
+		} ) );
+		$pool      = $routable;
 		$plan_days = array();
 		$weights   = self::interest_weights( $form );
 		$pw        = PCT_Planner::get()['weights'];
 		$proposal_windows = self::proposal_windows( $form );
 
 		for ( $d = 1; $d <= $days; $d++ ) {
+			// Date-bound events are only routable on their own day.
+			$day_date     = self::travel_day_date( $form, $d );
+			$day_routable = array_values( array_filter( $routable, function ( $item ) use ( $day_date ) {
+				return 'event' !== ( $item['type'] ?? '' ) || self::valid_scheduled_event_for_window( $item, $day_date, $day_date );
+			} ) );
+			$day_ids = array_flip( array_map( 'intval', wp_list_pluck( $day_routable, 'id' ) ) );
+			$pool    = array_values( array_filter( $pool, function ( $item ) use ( $day_ids ) {
+				return isset( $day_ids[ (int) $item['id'] ] );
+			} ) );
 			for ( $p = 1; $p <= 4; $p++ ) {
 				if ( empty( $pool ) ) {
-					$pool = $items;
+					$pool = $day_routable;
 				}
 				$selected = array();
 				$anchor_index = empty( $pool ) ? 0 : ( ( $p - 1 ) * 2 ) % count( $pool );
@@ -515,7 +536,18 @@ class PCT_Tour_Generator {
 				}
 				$selected[] = $anchor;
 
-				while ( count( $selected ) < $per_day && ! empty( $pool ) ) {
+				while ( count( $selected ) < $per_day ) {
+					if ( empty( $pool ) ) {
+						// Candidates ran out mid-proposal: reuse items not already in
+						// this proposal so every option still gets a full route.
+						$chosen = array_map( 'intval', wp_list_pluck( $selected, 'id' ) );
+						$pool   = array_values( array_filter( $day_routable, function ( $item ) use ( $chosen ) {
+							return ! in_array( (int) $item['id'], $chosen, true );
+						} ) );
+						if ( empty( $pool ) ) {
+							break;
+						}
+					}
 					$last  = end( $selected );
 					$best  = null;
 					$bestv = -INF;
@@ -1221,7 +1253,8 @@ class PCT_Tour_Generator {
 	private static function enforce_curated_sources( array $result, array $city, array $form, array $items, array $mymap_context = array(), array $channel_items = array() ) {
 		$strategy = PCT_Planner::get()['strategy'];
 		$events = array_values( array_filter( $items, function ( $item ) {
-			return 'event' === ( $item['type'] ?? '' );
+			// Locationless events are Serendipity candidates, never route stops.
+			return 'event' === ( $item['type'] ?? '' ) && ! empty( $item['lat'] ) && ! empty( $item['lng'] );
 		} ) );
 		$maps = array_values( array_filter( $items, function ( $item ) {
 			return ! empty( $item['mymap_virtual'] ) || ! empty( $item['mymap_matched'] );
@@ -1275,7 +1308,8 @@ class PCT_Tour_Generator {
 		}
 		$source_usage['mymap_routes_available'] = count( $usable_routes );
 
-		foreach ( (array) ( $result['days'] ?? array() ) as &$day ) {
+		if ( empty( $result['days'] ) || ! is_array( $result['days'] ) ) { return $result; }
+		foreach ( $result['days'] as &$day ) {
 			if ( ! is_array( $day ) ) {
 				continue;
 			}
@@ -1425,7 +1459,8 @@ class PCT_Tour_Generator {
 		}
 		$available = count( $pool );
 		$used = array();
-		foreach ( (array) ( $result['days'] ?? array() ) as &$day ) {
+		if ( empty( $result['days'] ) || ! is_array( $result['days'] ) ) { return $result; }
+		foreach ( $result['days'] as &$day ) {
 			if ( ! is_array( $day ) ) { continue; }
 			$day_number = max( 1, absint( $day['day'] ?? 1 ) );
 			$proposal = max( 1, min( 4, absint( $day['proposal_number'] ?? 1 ) ) );
@@ -1604,7 +1639,8 @@ class PCT_Tour_Generator {
 
 	private static function canonicalize_route_order( array $result, array $items, array $form ) {
 		$windows = self::proposal_windows( $form );
-		foreach ( (array) ( $result['days'] ?? array() ) as &$day ) {
+		if ( empty( $result['days'] ) || ! is_array( $result['days'] ) ) { return $result; }
+		foreach ( $result['days'] as &$day ) {
 			if ( ! is_array( $day ) ) {
 				continue;
 			}
@@ -2199,7 +2235,8 @@ class PCT_Tour_Generator {
 		$windows = self::proposal_windows( $form );
 		$interests = array_values( array_filter( array_map( 'sanitize_key', (array) ( $form['interests'] ?? array() ) ) ) );
 		if ( empty( $interests ) ) { return $result; }
-		foreach ( (array) ( $result['days'] ?? array() ) as &$day ) {
+		if ( empty( $result['days'] ) || ! is_array( $result['days'] ) ) { return $result; }
+		foreach ( $result['days'] as &$day ) {
 			$proposal = max( 1, min( 4, absint( $day['proposal_number'] ?? 1 ) ) );
 			$global_focus_index = ( max( 1, absint( $day['day'] ?? 1 ) ) - 1 ) * 4 + ( $proposal - 1 );
 			$focus = $interests[ $global_focus_index % count( $interests ) ] ?? ( $focuses[ $proposal ] ?? '' );
@@ -2226,8 +2263,10 @@ class PCT_Tour_Generator {
 			$new_stop = array( 'item_id' => (int) $pick['id'], 'time' => self::nearest_slot_time( (array) ( $day['stops'] ?? array() ), $window ), 'note' => self::stop_note( $pick, $form ) );
 			$stops = (array) ( $day['stops'] ?? array() );
 			if ( count( $stops ) < 4 ) { $stops[] = $new_stop; } else {
-				$replace = count( $stops ) - 1;
-				foreach ( array_reverse( $stops, true ) as $idx => $old ) {
+				// Replace from the front: curated Event/My Maps enforcement later
+				// replaces from the end, so the two repairs never overwrite each other.
+				$replace = 0;
+				foreach ( $stops as $idx => $old ) {
 					$old_item = $by_id[ (int) ( $old['item_id'] ?? 0 ) ] ?? null;
 					if ( ! $old_item || ( 'event' !== ( $old_item['type'] ?? '' ) && empty( $old_item['mymap_matched'] ) && empty( $old_item['mymap_virtual'] ) ) ) { $replace = $idx; break; }
 				}

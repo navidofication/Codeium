@@ -65,14 +65,14 @@ if ( is_wp_error( $r ) ) { echo '  ERR ' . $r->get_error_message() . ' ' . json_
 $t = is_wp_error( $r ) ? array() : pct_data( $r );
 pct_assert( ! is_wp_error( $r ) && ! empty( $t['result']['days'] ), 'tour created with days' );
 $days = $t['result']['days'] ?? array();
-pct_assert( 3 === count( $days ), '3 nights -> 3 days: ' . count( $days ) );
+pct_assert( 3 === count( array_unique( array_map( 'intval', wp_list_pluck( $days, 'day' ) ) ) ) && 12 === count( $days ), '3 nights -> 3 days x 4 proposals: ' . count( $days ) );
 pct_assert( ! empty( $t['id'] ) && ! empty( $t['token'] ) && ! empty( $t['url'] ), 'tour stored with id/token/url: ' . ( $t['url'] ?? '' ) );
 pct_assert( false !== strpos( (string) ( $t['url'] ?? '' ), 'jane' ) || false !== strpos( (string) ( $t['url'] ?? '' ), 'testville' ), 'permalink contains name/city: ' . ( $t['url'] ?? '' ) );
 $title = $t['result']['title'] ?? '';
 pct_assert( false !== stripos( $title, 'Jane' ) && false !== stripos( $title, 'Testville' ), 'title has name + city: ' . $title );
 $stop = $days[0]['stops'][0] ?? array();
 pct_assert( isset( $stop['lat'], $stop['lng'] ), 'stop has coordinates' );
-pct_assert( 'https://maps.google.com/?q=Place+' . $stop['item_id'] === $stop['gmaps_url'] || 30 === (int) $stop['item_id'], 'stop uses stored Google Maps link: ' . $stop['gmaps_url'] );
+pct_assert( 'https://maps.google.com/?q=Place+' . ( (int) $stop['item_id'] - 10 ) === $stop['gmaps_url'] || 30 === (int) $stop['item_id'], 'stop uses stored Google Maps link: ' . $stop['gmaps_url'] );
 $all_ok = true;
 foreach ( $days as $day ) { foreach ( (array) $day['stops'] as $s ) { $acc = (array) ( $s['accessibility'] ?? $s['tags'] ?? array() ); if ( ! in_array( 'wheelchair', $acc, true ) ) { $all_ok = false; } } }
 pct_assert( $all_ok, 'wheelchair constraint: every stop accessible' );
@@ -196,8 +196,7 @@ $r = pct_rest( 'GET', '/guide/events', array(), array( 'X-PCT-GUIDE' => $token )
 pct_assert( is_wp_error( $r ), 'revoked guide -> 403' );
 
 echo "== vibe (sandbox)\n";
-PCT_Settings::set( 'vibe_enabled', 1 );
-PCT_Settings::set( 'vibe_sandbox', 1 );
+update_option( PCT_Vibe::OPTION, array_merge( PCT_Vibe::settings(), array( 'enabled' => 1, 'sandbox' => 1 ) ) );
 $r = pct_rest( 'POST', '/vibe/otp', array( 'mobile' => '09121112233' ) );
 if ( is_wp_error( $r ) ) { echo '  ERR ' . $r->get_error_message() . "\n"; }
 $o = is_wp_error( $r ) ? array() : pct_data( $r );

@@ -310,6 +310,19 @@ function wp_insert_attachment( $a, $f = '', $p = 0 ) { $a['post_type'] = 'attach
 function wp_generate_attachment_metadata() { return array(); } function wp_update_attachment_metadata() { return true; }
 function wp_get_attachment_url( $id ) { $f = get_post_meta( $id, '_wp_attached_file', true ); return $f ? 'http://example.test/uploads/' . $f : false; }
 function wp_delete_attachment( $id ) { return wp_delete_post( $id ); }
+function get_attached_file( $id ) { $f = get_post_meta( $id, '_wp_attached_file', true ); return $f ? wp_upload_dir()['path'] . '/' . $f : false; }
+function get_post_mime_type( $id ) { $p = get_post( $id ); return $p ? ( $p->post_mime_type ?? 'image/png' ) : false; }
+function get_the_post_thumbnail_url( $id = null, $s = 'post-thumbnail' ) { $t = get_post_meta( $id, '_thumbnail_id', true ); return $t ? wp_get_attachment_url( $t ) : false; }
+function has_post_thumbnail( $id = null ) { return (bool) get_post_meta( $id, '_thumbnail_id', true ); }
+function get_post_thumbnail_id( $id = null ) { return (int) get_post_meta( $id, '_thumbnail_id', true ); }
+function get_site_icon_url() { return ''; }
+function is_main_query() { return true; }
+function is_rtl() { return false; }
+function is_ssl() { return false; }
+function set_url_scheme( $u, $s = null ) { return (string) $u; }
+function wp_http_validate_url( $u ) { return filter_var( $u, FILTER_VALIDATE_URL ) && preg_match( '#^https?://#i', $u ) ? $u : false; }
+function wp_script_is() { return false; }
+if ( ! function_exists( 'mb_stripos' ) ) { function mb_stripos( $h, $n, $o = 0 ) { return stripos( $h, $n, $o ); } function mb_strtolower( $s ) { return strtolower( $s ); } }
 function wp_delete_file( $f ) { if ( file_exists( $f ) ) { unlink( $f ); } }
 function wp_tempnam( $n = '' ) { return tempnam( sys_get_temp_dir(), 'pct' ); }
 function wp_mail( $to, $s, $m, $h = array() ) { $GLOBALS['mail'][] = compact( 'to', 's', 'm' ); return true; }
@@ -361,10 +374,10 @@ function pct_boot( $admin = false ) {
 function pct_assert( $cond, $msg ) { if ( ! $cond ) { echo "  FAIL: $msg\n"; $GLOBALS['fails']++; } else { echo "  ok: $msg\n"; } }
 function pct_render( $cb, ...$args ) { ob_start(); try { call_user_func_array( $cb, $args ); } catch ( PCT_Test_Exit $e ) { ob_end_clean(); return 'EXIT: ' . $e->getMessage(); } return ob_get_clean(); }
 function pct_seed_city() {
-	pct_seed( 1, 'pct_city', 'Testville', array( '_pct_country' => 'Utopia', '_pct_lat' => 48.85, '_pct_lng' => 2.35, '_pct_zoom' => 13, '_pct_mymaps' => array( array( 'label' => 'Best of', 'url' => 'https://www.google.com/maps/d/viewer?mid=abc123' ) ), '_pct_google_url' => 'https://maps.google.com/?q=Testville', '_pct_channels' => array( array( 'label' => 'Telegram', 'url' => 'https://t.me/testville' ) ) ) );
+	pct_seed( 1, 'pct_city', 'Testville', array( '_pct_country' => 'Utopia', '_pct_lat' => 48.85, '_pct_lng' => 2.35, '_pct_zoom' => 13, '_pct_mymaps' => array( array( 'label' => 'Best of', 'url' => 'https://www.google.com/maps/d/viewer?mid=abc123' ) ), '_pct_gmaps_url' => 'https://maps.google.com/?q=Testville', '_pct_channels' => array( array( 'label' => 'Telegram', 'url' => 'https://t.me/testville' ) ) ) );
 	$cats = array( 'historical', 'museums', 'food', 'artistic', 'nature', 'shopping', 'markets', 'viewpoints', 'nightlife', 'cultural' );
 	for ( $i = 0; $i < 12; $i++ ) {
-		pct_seed( 10 + $i, 'pct_place', 'Place ' . $i, array( '_pct_city_id' => 1, '_pct_lat' => 48.85 + $i * 0.004, '_pct_lng' => 2.35 + ( $i % 3 ) * 0.005, '_pct_duration' => 60 + $i * 10, '_pct_price_tier' => $i % 2 ? 'low' : 'free', '_pct_accessibility' => $i % 2 ? array( 'wheelchair' ) : array(), '_pct_best_time' => array( 'morning' ), '_pct_address' => $i . ' Main St', '_pct_google_url' => 'https://maps.google.com/?q=Place+' . $i ), array( $cats[ $i % count( $cats ) ] ) );
+		pct_seed( 10 + $i, 'pct_place', 'Place ' . $i, array( '_pct_city_id' => 1, '_pct_lat' => 48.85 + $i * 0.004, '_pct_lng' => 2.35 + ( $i % 3 ) * 0.005, '_pct_duration' => 60 + $i * 10, '_pct_price_tier' => $i % 2 ? 'low' : 'free', '_pct_accessibility' => $i % 2 ? array( 'wheelchair' ) : array(), '_pct_best_time' => array( 'morning' ), '_pct_address' => $i . ' Main St', '_pct_gmaps_url' => 'https://maps.google.com/?q=Place+' . $i ), array( $cats[ $i % count( $cats ) ] ) );
 	}
 	pct_seed( 30, 'pct_event', 'Night Market', array( '_pct_city_id' => 1, '_pct_lat' => 48.86, '_pct_lng' => 2.36, '_pct_start' => gmdate( 'Y-m-d', strtotime( '+2 days' ) ) . ' 18:00', '_pct_end' => gmdate( 'Y-m-d', strtotime( '+2 days' ) ) . ' 23:00', '_pct_organizer_name' => 'City Org', '_pct_organizer_url' => 'https://org.example', '_pct_event_url' => 'https://event.example', '_pct_accessibility' => array( 'wheelchair' ) ), array( 'markets', 'food' ) );
 }
